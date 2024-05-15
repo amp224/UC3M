@@ -1,0 +1,386 @@
+---
+title: "Final Homework"
+author: "Alejandro Macías Pastor and Luisa Ripoll Alberola"
+date: "25/10/2023"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(fdth) # to create frequency tables
+library(knitr) # to print tables with kable
+library(e1071) # to calculate kurtosis and skewness
+library(data.table)
+library(lattice)
+library(ggplot2)
+library(plyr)
+library(ggmosaic)
+library(caret)
+library(h2o)
+
+```
+
+```{r}
+# Run data
+df = read.csv("StudentsPerformance.csv", header = T)
+head(df)
+```
+
+We are going to work with a dataset to predict students' performance. We found the data in Kaggle: https://www.kaggle.com/datasets/adithyabshetty100/student-performance/data. It was graded with a usability of 8.4 out of 10. As it has 5 categorical variables and 3 numerical ones, and 1,000 observations, it may be a good choice for this task.
+
+The variables studied are: 
+- Gender: 1 for male, 0 for female. 
+- Race: divided in groups from A to E. We actually don't know the race of each group, so this variable will not be as significant as others. 
+- Parental level of education: from "high school" to "master's degree".
+- Lunch: whether the student has a lunch prize reduction (related to low income) or not.
+- Test preparation course: if the student has completed a preparation course or not.
+- Math, reading and writing scores, punctuated from 0 to 100.
+
+Exercise 1
+
+
+1)
+
+```{r}
+
+
+math.table = fdt(df$math.score)
+kable(math.table)
+
+
+reading.table = fdt(df$reading.score)
+kable(reading.table)
+
+
+writing.table = fdt(df$writing.score)
+kable(writing.table)
+
+
+```
+
+
+2)
+
+A good way to have a peek at the data's distribution is to estimate some of its moments or measures. The measures of centrality chosen for the current data are the median and mean. In order to have a measure of spread, we will also calculate the data's standard deviation instead of the variance, since the standard deviation has an easier interpretation in terms of the real data. Its skewness and kurtosis will also be calculated. This will be carried out for every continuous variable, that is, each of the scores of the different disciplines evaluated.
+
+```{r}
+measures = function(x){
+    c(mean(x), median(x), sd(x), skewness(x), kurtosis(x))
+}
+
+expl = data.frame(Measure = c('Mean', 'Median', 'Std.dev.', 'Skewness', 'Kurtosis'),
+              Mathematics = measures(df$math.score),
+              Reading = measures(df$reading.score),
+              Writing = measures(df$writing.score)
+              )
+options(digits = 4)
+kable(expl)
+
+```
+
+
+The first thing to notice is that in no case do the means and medians have the same value, although the gap is not too big, especially in the case of the mathematics score. This indicates that the distributions of each score are not symmetric. In the case of the reading and writing score the mean being lower than the median indicates that there might be some slight outliers with a low score. 
+
+In terms of the variance, all scores present a similar value. Although the normality of the score variables has not yet been checked, if they were normally distributed variables those values of standard deviation would indicate that around 68% of the scores attained by the students can be found between 60 or 65 and 80 or 85. They do not seem to be overly spread.
+
+We can also notice that the scores for all three disciplines posses a negative skewness.The three distributions being left-skewed indicates that the existent asymmetry tends towards a higher accumulation of better scores.
+
+Finally, as far as the kurtosis is concerned, both the reading and writing scores seem to be platykurtic,that is, distributions with thinner tails, with the majority of scores being more concentrated around the mean and median values. On the other hand, the distribution of the mathematics score seem to be leptokurtic, that is, a distribution with heavier tails and where extreme score values might be more frequent.
+
+
+3)
+
+
+
+Let's study the influence of the gender in the test scores.
+
+```{r, warning=FALSE}
+library(lattice)
+library(gridExtra)
+
+bplot11 = bwplot(math.score ~ gender, data = df, 
+        xlab = "Gender", 
+        ylab = "Math Score")
+
+bplot12 = bwplot(reading.score ~ gender, data = df, 
+        xlab = "Gender", 
+        ylab = "Reading Score")
+
+bplot13 = bwplot(writing.score ~ gender, data = df, 
+        xlab = "Gender", 
+        ylab = "Writing Score")
+
+grid.arrange(bplot11, bplot12, bplot13, ncol=3,
+             top = "Gender vs Scores")
+```
+
+The difference between male and female is bigger in relation to the writing score. We can assert that, in average, the girls from our dataset are better in linguistic subjects than boys, when boys are better in mathematics than girls. This result reinforces the general conception of gender differences in education. However, the biggest study on the subject came to the conclusion that gender difference in mathematical performance is negligible. See Hyde, J. S., Fennema, E., & Lamon, S. J. (1990). Gender differences in mathematics performance: a meta-analysis. Psychological bulletin, 107(2), 139.
+
+We will see clearly the correlation of scores in a 3D cloud plot. This way, students tend to get homogeneous scores, either good or bad, even there is many variance in this results.
+
+```{r}
+cloud(math.score ~ reading.score*writing.score,
+data = df, 
+auto.key = TRUE,
+xlab = "Reading Score",
+ylab = "Writing Score",
+zlab = "Math Score",
+main = "Correlation between scores")
+```
+
+This is really useful because, in order to achieve general conclusions, we can take just one of the scores and generalize. This wouldn't be valid for quantitative analysis, but making a qualitative analysis of the influence of groups in the scores using just one score simplifies the graphics and enhance the deduction of conclusions.
+
+Now, let's study the effect of race.
+
+```{r, warning=FALSE}
+xyplot(math.score ~ race.ethnicity | gender,
+       group = gender,
+       data = df, 
+       type = c("p", "smooth"),
+       scales = "free", 
+       xlab = "Ethnicity group",
+       ylab = "Math scores",
+       main = "Influence of race in math scores per gender")
+```
+
+We can see how the ethnicity affects equally to both genders in the last scatter plot. Let's compare a boxplot by gender and a boxplot by race to see which is more significant.
+
+```{r}
+library(ggplot2)
+
+p <- ggplot(df, aes(x=race.ethnicity, y=writing.score)) + 
+  geom_boxplot(notch = T, outlier.colour = "red", outlier.shape = 8,
+               outlier.size = 4)
+
+p <- p + coord_flip() 
+
+bplot31 <- ggplot(df, aes(x=gender, y=writing.score),
+                  ) + 
+  geom_boxplot(notch = T, outlier.colour = "red", outlier.shape = 8,
+               outlier.size = 4) # with lattice we cannot use coord_flip(), so we code again "bplot13" with ggplot
+
+bplot31 <- bplot31 + coord_flip()
+
+grid.arrange(p, bplot31, nrow = 2, top = "Comparison of gender and race influence")
+```
+
+As there are more groups for ethnicity, its intermediate differences are smaller than the difference in scores between genders. However, the difference in mean between race 0 and race 4 is similar to the differences between male and female.
+
+Now we will study the effectiveness of the test preparation course.
+
+```{r}
+stripplot(test.preparation.course ~ math.score + reading.score + writing.score,
+          data = df, 
+          jitter.data = TRUE, alpha = 0.6,
+          xlab = "Scores",
+          ylab = "Test preparation couse",
+          main = "Influence of the preparation course")
+```
+
+Seeing this graphic, it seems like the test preparation course makes it easier for students to pass and improves scores, even there is a big variability. The course cannot ensure top grades for every student, as each one comes from a different background. Bad students (the atypical values) get worse results without taking the course. This way, it is feasible to pass without taking the preparation course, but the course can help students to improve their scores and guarantee they pass.
+
+We can see the differences in mean and variance in the following box plot. There is a difference in the mean of 10 points, which is considerable. Taking the course, the variance is also reduced for good.
+
+```{r}
+bwplot(test.preparation.course ~ math.score + reading.score + writing.score,
+          data = df, 
+          xlab = "Scores",
+          ylab = "Test preparation couse",
+          main = "Influence of the preparation course")
+```
+
+```{r}
+b1 = bwplot(math.score ~ test.preparation.course,
+       data = df,
+       xlab = "Test Preparation Course",
+       ylab = "Math Score")
+
+b2 = bwplot(reading.score ~ test.preparation.course,
+       data = df,
+       xlab = "Test Preparation Course",
+       ylab = "Reading Score")
+
+b3 = bwplot(writing.score ~ test.preparation.course,
+       data = df,
+       xlab = "Test Preparation Course",
+       ylab = "Writing Score")
+
+grid.arrange(b1, b2, b3, ncol = 3, top = "Comparison of influence of preparation per subjects")
+```
+
+The test preparation course is equally effective for all subjects.
+
+As "lunch reduction" and "parental level of education" are related to the income of the nuclear family, we are going to study these two groups together.
+
+```{r}
+bwplot(math.score ~ lunch, 
+       data = df,
+       xlab = "Lunch Prize Reduction",
+       ylab = "Math Scores",
+       main = "Influence of lunch prize reduction in scores")
+
+bwplot(math.score ~ parental.level.of.education, 
+       data = df,
+       xlab = "Parental Level of Education",
+       ylab = "Math Scores",
+       main = "Influence of Parental Level of Education in Scores")
+```
+
+We can see that, in our set of data, the parental level of education influence is smooth: there are not big differences between groups. However, between students with lunch prize reduction and the rest, there is a difference in mean, as well as generally lower grades. 
+
+
+4)
+
+```{r}
+ggplot(data=df, aes(math.score)) +
+  geom_histogram(aes(y = ..density..),
+                 colour=1, fill='lightblue') + 
+  geom_density(colour='darkblue', linewidth=1) +
+  xlab('Mathematics scores') 
+
+
+```
+```{r}
+
+ggplot(df, aes(sample=math.score)) + 
+  stat_qq(color='blue', size=1) + 
+  stat_qq_line()
+
+```
+
+```{r}
+ggplot(data=df, aes(math.score)) +
+  geom_boxplot() +
+  xlab('Mathematics scores')
+```
+```{r}
+ggplot(data=df, aes(reading.score)) +
+  geom_histogram(aes(y = ..density..),
+                 colour=1, fill='yellow') + 
+  geom_density(colour='red', linewidth=1) +
+  xlab('Reading scores') 
+```
+```{r}
+ggplot(df, aes(sample=reading.score)) + 
+  stat_qq(color='orange', size=1) + 
+  stat_qq_line()
+```
+
+```{r}
+ggplot(data=df, aes(reading.score)) +
+  geom_boxplot() +
+  xlab('Reading scores')
+```
+
+
+```{r}
+ggplot(data=df, aes(writing.score)) +
+  geom_histogram(aes(y = ..density..),
+                 colour=1, fill='lightgreen') + 
+  geom_density(colour='darkgreen', linewidth=1) +
+  xlab('Writing scores') 
+```
+
+
+
+
+```{r}
+ggplot(df, aes(sample=writing.score)) + 
+  stat_qq(color='darkgreen', size=1) + 
+  stat_qq_line()
+```
+
+
+```{r}
+ggplot(data=df, aes(writing.score)) +
+  geom_boxplot() +
+  xlab('Writing scores')
+```
+
+
+
+5)
+
+
+```{r}
+ggplot(df, aes(x=math.score)) +
+  facet_grid(~gender)+
+  geom_histogram(aes(y = ..density..)) + 
+  geom_density(colour='red', linewidth=1x) +
+  xlab('Mathematics scores')
+```
+
+
+
+
+6)
+
+```{r}
+parental.df = as.data.frame(table(df$parental.level.of.education))
+
+kable(parental.df)
+
+cont = table(df$race.ethnicity, df$parental.level.of.education)
+kable(cont)
+
+```
+
+
+```{r}
+ ggplot(data=df) + 
+         geom_mosaic(aes(x=product(race.ethnicity), fill=parental.level.of.education)) +
+         labs(x="Race", y="Parental level of education", fill='Parental level of education') +
+         theme(legend.position='none')
+         
+
+```
+
+
+EXERCISE 2
+
+
+
+First we are going to convert the categorical values into a numerical one (binary or integer values, depending if there exist 2 or more groups).
+
+```{r}
+df$gender = factor(df$gender, labels = c(0,1)) # 0 = Female, 1 = Male
+
+df$race.ethnicity = factor(df$race.ethnicity, labels = c(0:4)) # 0 = A, 1 = B ...
+
+df$parental.level.of.education = factor(df$parental.level.of.education, levels = c("some high school", "high school", "associate's degree", "some college", "bachelor's degree", "master's degree"), labels = c(0,1,2,3,4,5)) # ascending order of education
+
+df$lunch = factor(df$lunch, labels = c(0,1)) # 0 = reduced fee, 1 = standard
+
+df$test.preparation.course = factor(df$test.preparation.course, labels = c(1,0)) # 0 = none, 1 = completed
+
+head(df)
+```
+
+
+
+```{r}
+library(caTools)
+
+p_train = 0.8
+
+# Dividing dataset in train and test
+set.seed(88)
+
+sample = sample.split(df$math.score, SplitRatio = p_train)
+df_train = subset(df, sample == TRUE)
+df_test = subset(df, sample == FALSE)
+
+dim(df_train)
+dim(df_test)
+```
+
+```{r}
+dummy_model = dummyVars(~ race.ethnicity + parental.level.of.education, data = df_train)
+```   
+
+
+
+
