@@ -1,0 +1,99 @@
+---
+title: 'Task 4: MLE'
+author: "Alejandro Macías y Luisa Ripoll"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# The gamma distribution
+
+The gamma distribution with parameters $\alpha > 0$ and $\beta > 0$ follows the probability density function shown below: 
+
+$$ f(x;\alpha ,\beta) = \frac{1}{\Gamma(\alpha)\beta^\alpha}x^{\alpha-1}e^{-x/\beta} $$
+The parameters are known as shape and scale, respectively. 
+
+As far as the simulations within this task are concerned, we will deal exclusively with a $\Gamma(2, 3)$ distribution.
+Let us simulate a sample of size 1000 from said distribution:
+
+
+```{r cars}
+set.seed(123)
+n= 1000
+srs = rgamma(n, shape=2, scale=3)
+```
+
+For any simple random sample with this distribution, the likelihood function can be expressed as:
+
+$$ L(\alpha, \beta) = \prod_{i=1}^n f(x_i; \alpha, \beta) = \prod_{i=1}^n \frac{1}{\Gamma(\alpha)\beta^\alpha}x_i^{\alpha-1}e^{-x_i/\beta}$$
+which means its log-likelihood would be:
+
+
+$$ \log L(\alpha, \beta) = \sum_{i=1}^n\log f(x_i;\alpha,\beta) = -n\log\Gamma(\alpha) -n\alpha\log\beta + (\alpha - 1 )\sum_{i=1}^n\log x_i - \frac{1}{\beta} \sum_{i=1}^nx_i   $$
+
+# MLE through a user-written function
+
+Given the simple random sample obtained earlier and the parameters necessary to specify the gamma distribution, the function L evaluates said distribution's pdf evaluated at each element of the sample and sums the logarithms of all those values, obtaining the value of the log-likelihood function. Note that, in fact 
+
+```{r}
+L = function(parameters){
+  d = dgamma(x=srs, shape=parameters[1], scale=parameters[2])
+  return (-sum(log(d)))
+}
+```
+
+Once the log-likelihood function has been defined, we can proceed to optimize it through use of the method optim, which by default minimizes. Here the negative sign introduced earlier comes in handy, as it is more computationally favourable to minimize $-\log L$ than it is to maximize $\log L$:
+
+```{r}
+optim(par=c(1,1), fn=L, method="L-BFGS-B", lower=c(0,0), upper=c(Inf,Inf))$par
+```
+
+
+# The maxLik library
+
+The maxLik package for R is a set of tools oriented towards Maximum Likelihood analysis, and thus implements ways to optimize functions. 
+The main method of the package is maxLik, which takes as input the log-likelihood function (evaluated at a given simple random sample) and a vector of initial values for the distribution-specific parameters and proceeds to return an object of class 'maxLik'. The advantage of the objects of type 'maxLik' is that they can be fed to some useful methods such as summary, which make accessing all the information obtained by the maxLik function very easy. One important thing to note is that maxLik maximizes, it does not minimize. This maximization process can even be done with different methods. 
+
+
+
+
+
+# MLE with maxLik
+First, as with any R library, we must load the packages onto R (assuming it has already been installed).
+
+```{r}
+library(maxLik)
+```
+
+Then we must define the log-likelihood function, for which we will use the same simple random sample as earlier. The function to evaluate the gamma pdf on the simple random sample already includes a parameter so that it returns the logarithm of the values. 
+
+```{r}
+# code the log-likelihood function to optimize
+LL = function(param){
+  alpha <- param[1]
+  beta <- param[2]
+  d = dgamma(srs, shape=alpha, scale=beta, log=TRUE)
+  return (sum(d)) 
+}
+```
+
+Note that we have not added a negative sign this time, as maxLike maximizes instead of minimizing.
+Now we proceed to maximize the log-likelihood function and show the summary of the optimizing process:
+
+```{r}
+est <- maxLik(LL, start=c(alpha=0.1, beta=0.1), method="NR")
+summary(est)
+```
+# Conclusion
+
+As we can see, the values are very similar to those obtained without the maxLik library, having discrepancies of a small order of magnitude:
+$$ \Delta \alpha = |2.082096 - 2.08210|=4\cdot 10^{-6}$$
+$$ \Delta \beta = |2.70876 - 2.708758| = 2 \cdot 10^{-6}$$
+
+We can also notice that the values obtained for the parameters do not exactly match the theoretical ones. Increasing the sample size would likely reduce the gap in the values.
+
