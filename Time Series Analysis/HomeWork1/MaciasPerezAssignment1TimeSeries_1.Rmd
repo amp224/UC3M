@@ -1,0 +1,381 @@
+---
+title: "Task 1"
+author: "Alejandro Macías Pastor & Arturo Pérez Peralta"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# 1. Introduction and objectives
+
+The output of man-made greenhouse emissions into the atmosphere has increased meteorically in the last 150 years as a consequence of the Industrial Revolution. This has led to, among other things, a gradual increase in the global average temperature. This warming, along with its potential effects on the global climate, is usually known as Anthropogenic Climate Change. It is feared that this phenomenon will have terrible long term consequences for the global economy and the wellfare of humankind.
+
+This is why there is a big incentive to study meteorological variables through the tools of time series. In particular, weather scientists are interested in models that are capable of accurately predicting the future evolution of temperature in order to better prepare for the secondary effects that this might have on the planet's climate.
+
+In this report we will use standard time series' techniques to study a dataset that tracks the monthly temperatures from a meteorological station at Boston's Logan Airport, Massachusetts, USA. This register started in 1936 and goes all the way to present times, and it can be found on the [NOAA wepage](https://www.ncei.noaa.gov/cdo-web/). Our objectives with this dataset are the following:
+
+1. Perform a basic Exploratory Data Analysis.
+1. Use three different models to explain the data. In particular we will fit a Holt-Winters model, a harmonic analysis and a neural network.
+1. Compare between the models to see which fits our data the best.
+
+Now that we have a clear picture we can start by importing all the different packages and libraries that we are going to use, both in `R` and in `Python`:
+
+```{r, results='hide', messages=FALSE, warning=FALSE}
+library(reticulate) # to integrate Python within the Markdown
+library(ggplot2) 
+library(ggfortify) # better plots 
+library(TSA) 
+library(forecast) # to deal with time series
+library(Metrics) # to compare predictions with MSE
+set.seed(12345) # set seed for reproducibility
+```
+
+```{python, results='hide', warning=FALSE, messages=FALSE}
+# Basic imports for any Python data science project
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+#The following two imports are used to make models based on 
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+#The following three imports are used to make models based on neural networks
+from keras.models import Sequential
+from keras.layers import LSTM, Dense
+from sklearn.preprocessing import MinMaxScaler
+```
+
+And we can start by loading or dataset and transforming it into a `ts` format and simply plotting the time series to get a feel for our data:
+
+```{r}
+#We load the dataset
+data = read.csv("3610412.csv")
+
+#We will only consider average temperature
+data = data[,c("DATE","TAVG")]
+#We remove the last observation, which is the only missing value
+data = data[c(1:1056),]
+
+#We transform the dataset into a 
+series = ts(data$TAVG, start=c(1936,1,1), freq=12) #Monthly frequency
+autoplot(series, ylab='Average Temperature (ºC)') #Let ggfortify plot the series
+```
+
+At a glance, we observe a cyclical behavior that falls in line with what one would expect from temperature (which varies in an expectable pattern according to the seasons). From looking to the `Y` axis we can see that temperature oscillates between sub zero temperatures in winter (the lowest ones being around $-5^{\circ}C$) and $20^{\circ} C$ in summer, which is to be expected from the location we are studying. We are now ready to begin the proper study of our data.
+
+# 2. Partition of the data and Exploratory Data Analysis
+
+In order to better estimate the real performance of the models we are going to study, we will use the method of (1-fold) cross-validation. Therefore, we will divide the dataset into two parts: one that will be used only for training the models and another one that will be used only for testing their performance. The partition will be done in such a way that the first 70 years of the time series will be used for the training set and the last 17 years for testing, which translates into a roughly 80-20 train-test partition.
+
+```{r}
+#First 70 years are used for training
+data_train = data[c(1:852),]
+series_train = ts(data_train$TAVG, start=c(1936,1,1), freq=12)
+
+#Last 17 years are used for testing
+data_test = data[c(853:1056),] 
+series_test = ts(data_test$TAVG, start=c(2001,1), freq=12)
+```
+
+We can visualize this split using `Python`, which requires that we import our data to the `Python` interpreter:
+
+```{python}
+#We import the data from the R console
+data = r.data
+#We transform the 'DATE' column to a datetime format
+data["DATE"] = pd.to_datetime(data["DATE"])
+#We use the 'DATE' column as an index
+data = data.set_index("DATE")
+#We indicate that we are working with monthly data
+data.index.freq = 'MS'
+
+#We create a train-test partition like we did in R
+train = data[:-204] #First 70 years are used in the training set
+test = data[-204:] #Last 17 years are used in the testing set
+
+plt.clf() #Clear all previous plots
+plt.plot(train,label="Training") #Plot training set
+plt.plot(test,label="Testing") #Plot testing set
+plt.xlabel("Year")
+plt.ylabel("Average Temperature (ºC)")
+plt.title("Train-Test Partition") 
+plt.legend() 
+plt.show()
+```
+
+We can now perform a really basic Exploratory Data Analysis as a sanity check before we proceed. For starters we can check the proportion of missing values:
+
+```{r}
+#We see how many missing values there are in our data
+print(colSums(is.na(data_train)))
+```
+
+As we can see our data has no missing values, which means that we do not need to delve into imputation methods of any kind. We now plot a histogram of the average temperature in order to get a feel for its distribution:
+
+```{r}
+#We plot a histogram of the average temperature
+ggplot(data = data_train, mapping = aes(x = TAVG)) + 
+  geom_histogram() +
+  theme_classic()
+```
+
+At a glance we observe that temperatures are kind of uniformly distributed which falls in line with what one could expect from the cyclical nature of the weather. However, there seems to be a bias towards higher temperatures, although it remains to be seen if such bias can be corroborated by the tools from time series.
+
+However, it is interesting to check the distribution of temperatures among all months, which yields the following graphics:
+
+```{r, fig.dim=c(8,12)}
+months <- c('January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December')
+par(mfrow=c(3,4))
+
+for (i in 1:12){
+  hist(data_train$TAVG[seq(i,length(data_train$TAVG),12)], main=months[i], xlab='Ave. Temp (ºC)')
+}
+```
+As we can see, the temperature distribution of each month is more "normal like", with extreme temperatures being rarer than central values.
+
+# 3. Descriptive techniques
+
+We are now ready to begin applying descriptive techniques to our dataset. These kind of tools aim to explain the past evolution and predict the future of a given series by identifying simple patterns such as trends, cycles or seasonal variation. We will use three descriptive techniques to study our temperature time series: Holt-Winters, harmonic analysis and neural networks.
+
+## 3.1 Holt-Winters model
+
+The Holt-Winters model is a method proposed for time series that show both trends and seasonality. It is made up of three smoothing equations: one for level, one for trend and one for seasonality. Due to the characteristics of our time series, we will use the additive formulation of model, which is defined by the following equations:
+
+$$ \hat{z}_{t+h} = a_t + hb_t + S_{t-p+(h-1) \,\text{mod}\, p}$$ where $a_t$ is the level, $b_t$ the trend, and $S_t$ the season. These three terms are updated following the equations shown below:
+
+$$ a_t = \alpha(z_t-S_{t-p}) + (1-\alpha)(a_{t-1}+b_{t-1})$$ $$ b_t = \beta(a_t-a_{t-1}) + (1-\beta)b_{t-1} $$ $$ S_t = \gamma(z_t-a_t) + (1-\gamma)S_{t-p}$$ where $\alpha$, $\beta$ and $\gamma$ are the three smoothing parameters.
+
+The `statsmodel` library in Python contains functions that greatly facilitate the computation of both the decomposition and the parameters of the Holt-Winters model. For the time series at hand:
+
+```{python}
+#We compute the decomposition and plot it
+holtwin = seasonal_decompose(data["TAVG"], model='additive')
+plt.clf()
+holtwin.plot()
+plt.show()
+```
+
+From this decomposition we can see how there is a clear seasonal component to the series, which might correspond to the yearly cycles of climate seasons. The trend on the other hand is less clear, showing a somewhat erratic behavior. Nonetheless, it seems to be slightly positive, especially when comparing the data from the 70s to present readings.
+
+Let us now compute the specific parameters we previously mentioned:
+
+```{python}
+#We define the model and use the fit method
+model = ExponentialSmoothing(train["TAVG"], seasonal_periods=12, trend='add',
+seasonal='add')
+fit = model.fit()
+
+#We print our results
+print("Model parameters: \n", fit.params)
+#We specifically print the parameters we previously defined
+print(f"The estimated alpha is: {fit.params['smoothing_level']:.3f}")
+print(f"The estimated beta is: {fit.params['smoothing_trend']:.3f}")
+print(f"The estimated gamma is: {fit.params['smoothing_seasonal']:.3f}")
+```
+
+We can now use these estimated parameters to predict the future evolution of the time series:
+
+```{python}
+#We make our predictions
+pred_hw = fit.predict(start=test.index[0], end=test.index[-1])
+#We store them in a data frame
+pred_hw = pd.DataFrame(pred_hw, index=test.index, columns=["PredictedTAVG"])
+```
+
+In order to visually test the performance of our model we can plot its predictions along with the testing series:
+
+```{python}
+plt.clf() 
+#We plot the testing set
+plt.plot(test['TAVG'],label='Testing')
+#We plot our predictions
+plt.plot(pred_hw, label='Predicted',linestyle='--') 
+plt.xlabel("Year") 
+plt.ylabel("Average Temperature") 
+plt.title("Predictions from Holt-Winters") 
+plt.legend()
+plt.show()
+```
+
+We can see in the plot that the predictions given by the Holt-Winters model are able to successfully capture the seasonal behavior of the time series, as well as its level and trend. However it is not perfect as it fails to predict the specific shapes of the peaks, which seem to follow a more chaotic pattern. Nonetheless, this is to be expected and we will later measure how much the model differs from reality.
+
+## 3.2 Harmonic analysis
+
+Harmonic analysis is based on Fourier's ideas that any periodic function can be decomposed as a sum of pure sine waves. In our case we will perform a Fourier transform on our training data to get this decomposition, which will serve as a model to predict the testing set. 
+
+For starters, we plot the periodogram of the training set, which allows us to visualize the contribution of each frequency:
+
+```{r}
+#We plot the preiodogram
+peri = periodogram(series_train)
+```
+
+We can see that the main contribution to the spectrum of the data is that of a single frequency that falls shy of $0.1 \text{ months}^{-1}$. We will use this frequency as a reference to determine the order of the Fourier decomposition, which we are now ready to perform:
+
+```{r}
+#We transform the maximum contribution to period units
+period.max = 1/peri$freq[which.max(peri$spec)]
+#We compute the Fourier transform
+taylor.lm = tslm(series_train ~ fourier(series_train, K=period.max/2))
+#We make our prediction
+taylor.fcast = forecast(taylor.lm, 
+                        data.frame(fourier(series_train, K=period.max/2, h=204)))
+prediction_har = taylor.fcast$mean
+```
+
+Since the `tslm` function is nothing but a wrapper of the `lm` function designed specifically for time series, we can check the parameters estimated by the model:
+
+```{r}
+summary(taylor.fcast$model)
+```
+
+
+It is easier to visualize our predictions by plotting them just like we did before:
+
+```{r}
+#We plot our results
+autoplot(taylor.fcast, ylab='Average temperature',
+         main='Predictions from Harmonic Analysis')
+```
+
+Once more, we can see that our model has successfully replicated the periodic behavior of the data, although its precision will be tested once we compute its mean square error.
+
+## 3.3 Neural networks
+
+The third and last approach we will use to predict the behavior of the series is one based on neural networks. Specifically, the model considered here is the one known as Long Short-Term Memory (LSTM) network. The main idea behind it is to predict an instance of the series by studying a certain number of previous values. In our particular case every prediction will be made by considering the previous 12 months.
+
+This model's architecture consists of a sequential stack of layers made up of two LSTM layers with 50 neurons each and a Dense layer to finish it off. During training, the model will use mean square error as a loss function and the adam optimizer. Like in the above sections, the model will be trained on the first 70 years of the time series, after which it will be used to predict the last 17 years.
+
+Before training the model, it is convenient to rescale the values of the time series to be in the $[0,1]$ range due to the characteristics of the neural network. For this purpose we will use a MinMax scaler. Furthermore, since each prediction will be made by looking at the previous 12 values in the series, the train-test partition has to be modified accordingly:
+
+```{python, results='hide', warning=FALSE, message=FALSE}
+#We define the scaler we are going to use
+scaler = MinMaxScaler(feature_range=(0,1))
+#We fit the scaler with our data and transform it accordingly
+train_scaled = scaler.fit_transform(train)
+test_scaled = scaler.transform(test)
+#We define a new dataset:
+#In X_train we store observations in groups of twelve
+#In y_train we store the thirteenth observation, which will predicted
+#using the previous twelve
+X_train, y_train = [], []
+for i in range(12, len(train)):
+  X_train.append(train_scaled[i-12:i,0])
+  y_train.append(train_scaled[i,0])
+#We transform our lists into numpy arrays
+X_train, y_train = np.array(X_train), np.array(y_train)
+#We give our arrays the correct shape for the neural network
+X_train = np.reshape(X_train, X_train.shape + (1,))
+```
+
+We are now ready to create and fit the model. The data will be processed for 100 epochs in batches of size 32 in order to adjust the model's parameters.
+
+```{python, results='hide', warning=FALSE, message=FALSE}
+#We define the model
+model = Sequential([
+  LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], 1)),
+  LSTM(50),
+  Dense(1)
+])
+#We define the loss function and the optimizer to be used
+model.compile(loss='mean_squared_error', optimizer='adam')
+#We fit the model with the training data
+model.fit(X_train, y_train, epochs=100, batch_size=32, verbose=0)
+```
+
+We can now make predictions on the testing set. However, we also need to carefully manipulate it like we did with the training set:
+
+```{python}
+#We get the data we are going to use
+inputs = data[-216:]
+#We transform it using the previously defined scaler
+inputs = scaler.transform(inputs)
+#We reshape it to the correct shape
+inputs = inputs.reshape(-1,1)
+
+#We store the observations of the testing set into groups of twelve like we did before
+X_test = []
+for i in range(12,len(inputs)):
+  X_test.append(inputs[i-12:i, 0])
+#We store our new list as a numpy array and reshape it accordingly
+X_test = np.array(X_test)
+X_test = np.reshape(X_test, X_test.shape + (1,))
+
+#We make our predictions
+predictions  = model.predict(X_test, verbose=0)
+#We invert the transformation we did at the beginning
+pred_nn = scaler.inverse_transform(predictions)
+#We store the results into a data frame
+result_df = pd.DataFrame({'a': test.values[:, 0], 'b': pred_nn[:, 0]})
+pred_nn = pd.DataFrame(pred_nn, index=test.index, columns=['PredictedTAVG'])
+print(result_df) 
+```
+
+Let us now visualize our predictions:
+
+```{python}
+plt.clf()
+#plt.plot(train)
+plt.plot(test, label="Original Observations") 
+plt.plot(pred_nn, label="Predictions") 
+plt.legend(loc='best')
+plt.xlabel('Year')
+plt.ylabel('Average Temperature (ºC)')
+plt.show()
+```
+
+Like the previous two models, the LSTM network seems to also be capable of capturing the seasonal tendencies of the series. Nonetheless it has troubles predicting the concrete shape of most peaks and valleys, which might be a result of simple happenstance due to the random nature of weather rather than a fault within the model.
+
+# 4. Comparison between models
+
+Finally we are going to compare the predictions produced by each model, both visually and quantitatively. For the latter we need to set a performance metric, which in our case will be the mean squared error (which is widely used in regression problems).
+
+We start with a simple visual comparison:
+
+```{python}
+# retrieve the harmonic analysis predictions 
+pred_har = pd.DataFrame(r.prediction_har, index=test.index, columns=["PredictedTAVG"])
+plt.clf()
+plt.plot(test['TAVG'], 'k', label='Original')
+plt.plot(pred_hw['PredictedTAVG'],'#E69F00', linestyle='dashed', alpha=0.7,
+label='Holt-Winters')
+plt.plot(pred_nn['PredictedTAVG'],'#F0E442', linestyle='dashed', alpha=0.7,
+label='Neural Network')
+plt.plot(pred_har['PredictedTAVG'],'#0072B2', linestyle='dashed', alpha=0.7,
+label='Harmonic')
+plt.ylabel('Average Temperature (ºC)')
+plt.xlabel('Year')
+plt.legend(loc='lower right')
+plt.show()
+```
+
+Although all three models seem to fit the data quite well, the figure is kind of cluttered and it is hard to see which one is best. Therefore, in order to compare our predictions we should use a quantitative criteria, which in our case will be the mean squared error with respecto to the original observations:
+
+```{r}
+prediction.hw = py$pred_hw 
+prediction.nn = py$pred_nn
+prediction.har = data.frame(taylor.fcast$mean, row.names=row.names(data_test))
+
+mse(prediction.hw$PredictedTAVG, data_test$TAVG)
+mse(prediction.nn$PredictedTAVG, data_test$TAVG)
+mse(prediction.har$taylor.fcast.mean, data_test$TAVG)
+```
+
+As we can see, the Holt-Winters models is the best of the three, which may be surprising considering its simplicity. However, perhaps the neural network could be improved through hyper-parameter tuning (changing, for example, the number of observations we considered from $12$ to some other number which may improve our results) or through changing its architecture (adding more layers or neurons). Finally, the harmonic model is the worst one, but perhaps it is a consequence of the simplicity of the periodogram: if the original data had a more complex spectrum perhaps this model would have fitted the data better than the other two.
+
+# 5. Conclusions
+
+In this report we have successfully analyzed the temperature data at a certain location, trying to describe and predict some of the patterns that govern the weather. With this goal in mind we have implemented three distinct models: a Holt-Winters model, a harmonic model and a neural network. Moreover, we have measured the performance of each of them through the use of a training-test split, yielding the following results:
+
+| Model | Holt-Winters | Harmonic model | Neural Network |
+|-------|--------------|----------------|----------------|
+| MSE   | 2.81         | 3.46           | 3.89           |
+
+As we can see, the model with the lowest mean squared error is the Holt-Winters model, which furthermore allowed to see an upwards trend in the level of the temperature. This latter fact is of particular interest when considering the context of the problem. However, the results of the Neural Network could be further improved through hyper-parameter tuning or modifying its architecture, and the harmonic model could be more useful if a more complex periodic pattern emerged. In any case, all three of them fitted our data in a satisfactory manner, which was the original purpose of this report.
