@@ -1,0 +1,1227 @@
+---
+title: "Task 2"
+author: "Alejandro Macías Pastor & Arturo Pérez Peralta"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Introduction and objectives
+
+In our previous report we established the importance of the use of time series' techniques in the study of climate data. As a quick reminder, let us remember that weather scientists are particularly interested in models that are capable of accurately predicting the future evolution of temperature in order to better prepare for the secondary effects that this might have on the planet's climate. This is the focus of the present work, in which we will try to develop an appropriate model to forecast the future evolution of the average temperature. Once again we will apply tools from time series analyisis to study a dataset that tracks the monthly temperatures from a meteorological station at Boston's Logan Airport, Massachusetts, USA. This register started in 1936 and goes all the way to present times, and it can be found on the [NOAA wepage](https://www.ncei.noaa.gov/cdo-web/). In particular we are interested in:
+
+1. Study the ACF and PACF of the data in order to determine its structure. 
+1. Use the previous data to establish an appropriate ARIMA model.
+1. Use bootstrap techniques to obtain confidence intervals for the model parameters.
+1. Propose a vector model that uses the rest of the variables of the dataset to try and find new relationships in the data.
+
+Now that we have a clear picture we can start by importing all the different packages and libraries that we are going to use, both in `R` and in `Python`:
+
+
+```{r, results='hide', messages=FALSE, warning=FALSE}
+library(reticulate) # to integrate Python within the Markdown
+library(ggplot2) 
+library(ggfortify) # better plots 
+library(TSA) 
+library(tseries)
+library(forecast) # to deal with time series
+library(Metrics) # to compare predictions with MSE
+library(blocklength) # to make bootstrap simulation
+library(latticeExtra) 
+set.seed(12345) # set seed for reproducibility
+```
+
+
+```{python warning=FALSE, messages=FALSE, results='hide'}
+# Basic imports for any Python data science project
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+import warnings # supress unnecessary warnings in Python that clutter the screen
+warnings.filterwarnings('ignore')
+
+#The following two imports are used to make models based on 
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+#The following three imports are used to make models based on neural networks
+from keras.models import Sequential
+from keras.layers import LSTM, Dense
+from sklearn.preprocessing import MinMaxScaler
+
+#We import all the packages for the ARIMA analysis
+import statsmodels.api as sm 
+from statsmodels.tsa.stattools import adfuller 
+from statsmodels.tsa.seasonal import seasonal_decompose 
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf 
+from statsmodels.tsa.arima.model import ARIMA 
+from pmdarima.arima import auto_arima 
+
+
+```
+
+We can now load our data:
+
+```{r}
+#We load the dataset
+data = read.csv("3610412.csv")
+
+#We will only consider average temperature
+data = data[,c("DATE","TAVG")]
+#We remove the last observation, which is the only missing value
+data = data[c(1:1056),]
+
+#We transform the dataset into a 
+series = ts(data$TAVG, start=c(1936,1,1), freq=12) #Monthly frequency
+autoplot(series, ylab='Average Temperature (ºC)') #Let ggfortify plot the series
+```
+
+# 2. Partition of the data and Exploratory Data Analysis
+
+In order to better estimate the real performance of the models we are going to study, we will use the method of 1-fold cross-validation. Therefore, we will divide the dataset into two parts: one that will be used only for training the models and another one that will be used only for testing their performance. The partition will be done in such a way that the first 70 years of the time series will be used for the training set and the last 17 years for testing, which translates into a roughly 80-20 train-test partition.
+
+```{r}
+#First 70 years are used for training
+data_train = data[c(1:852),]
+series_train = ts(data_train$TAVG, start=c(1936,1,1), freq=12)
+
+#Last 17 years are used for testing
+data_test = data[c(853:1056),] 
+series_test = ts(data_test$TAVG, start=c(2001,1), freq=12)
+```
+
+We can visualize this split using `Python`, which requires that we import our data to the `Python` interpreter:
+
+```{python}
+#We import the data from the R console
+data = r.data
+#We transform the 'DATE' column to a datetime format
+data["DATE"] = pd.to_datetime(data["DATE"])
+#We use the 'DATE' column as an index
+data = data.set_index("DATE")
+#We indicate that we are working with monthly data
+data.index.freq = 'MS'
+
+# We create a train-test partition like we did in R
+# We create a train-test partition like we did in R
+train = data[:-204] # First 70 years are used in the training set
+test = data[-204:] # Last 17 years are used in the testing set
+
+plt.clf() # Clear all previous plots
+plt.plot(train,label="Training", color = 'darkblue') # Plot training set
+plt.plot(test,label="Testing", color = 'orange') # Plot testing set
+plt.xlabel("Year") #Title and axis levels
+plt.ylabel("Average Temperature (ºC)")
+plt.title("Train-Test Partition") 
+plt.legend() #legend
+sns.set_theme(style = 'white') #Fancy looks for the graphic
+sns.despine()
+plt.show()
+```
+
+We are now ready to begin our analysis.
+
+# 3. ARIMA analysis
+
+We are going to fit a seasonal ARIMA model, that is we assume that the data follows the following relationship:
+
+$$
+\Phi_P(B^s)\phi_p(B)\nabla_s^D \nabla^d z_t = \Theta _Q(B^s) \theta_q(B) a_t
+$$
+
+In order to do this we need to:
+
+1. Stabilize the mean and the variance of our model.
+1. Determine the order of the seasonality, $s$.
+1. Determine the order of the seasonal ARIMA, $(P, D, Q)$.
+1. Determine the order of the regular ARIMA, $(p, d, q)$.
+
+The first step we should take is to stabilize the mean and the variance of our model. We are going to start with the variance. In order to do this we should check whether there is a linear relationship between the mean and variance and, if so, apply the proper box-cox transformation:
+
+```{python}
+#We plot yearly mean and std
+years = 70
+
+#We initialize the vector of means and stds
+set_mean = np.zeros(years)
+set_std = np.zeros(years)
+
+#We iterate over all years and compute the mean and std
+for i in range(years):
+    set_mean[i] = np.mean(train.iloc[12*i:12*(i+1)])
+    set_std[i] = np.std(train.iloc[12*i:12*(i+1)])
+
+#We plot our results and check whether there is a linear relationship
+plt.clf()
+plt.scatter(set_mean, set_std)
+plt.title('Relationship between mean and std')
+plt.xlabel('Mean')
+plt.ylabel('Standard deviation')
+sns.set_theme(style = 'white')
+sns.despine() 
+plt.show()
+```
+
+There is no clear relationship between the mean and the standard deviation. However, if one would insist on making a Box-Cox transformation one could use the following code:
+
+```{python}
+#We define the boxcox transformation
+def boxcox(x, alfa):
+  if alfa == 1:
+    return(np.log(x))
+  else:
+    return (x**(1-alfa) - 1)/(1 - alfa)
+
+#We import the linear model and make our estimation for our data
+from sklearn.linear_model import LinearRegression
+model = LinearRegression().fit(np.log(set_mean).reshape(-1,1), np.log(set_std))
+model.coef_
+
+#We could transform our data
+new_dat = boxcox(train + np.abs(np.min(train)) + 0.01, model.coef_) 
+```
+
+However, we have found that this transformation has no impact in our analysis.
+
+We now need to stabilize the mean. In the previous report we saw that the average temperature goes up as a result of climate change. Therefore, it stands to reason that we do need to differentiate the series, probably just one time will be enough. We can check whether this differentiation is necessary by means of the Dickey-Fuller test:
+
+
+```{r,warning=FALSE}
+adf.test(series_train, k=0)
+```
+
+The p-value of the test indicates that the null hypothesis should be rejected, and so the series should actually be considered stationary. Although this contradicts the results of the Holt-Winters model developed in the previous report, in order to take into account the Dickey-Fuller test we are going to consider models with both $d=1$ and $d=0$ and choose the best among them.
+
+In any case, we can now proceed with our analysis. Let us now take a look at the autocorrelation and partial autocorrelation functions:
+
+```{python}
+plt.clf()
+plot_acf(train, lags=24) #Plot ACF
+plt.title('Autocorrelation Function') #Title and axis labels 
+plt.xlabel('Lag') 
+plt.ylabel('ACF') 
+sns.set_theme(style = 'ticks') #Fancy graphics
+sns.despine()
+plt.show() 
+```
+
+```{python, echo = FALSE}
+plt.clf()
+plot_pacf(train, lags=20) #Plot PACF
+plt.title('Partial Autocorrelation Function') #Title and axis labels
+plt.xlabel('Lag') 
+plt.ylabel('PACF') 
+sns.set_theme(style = 'ticks') #Fancy graphics
+sns.despine()
+plt.show() 
+```
+
+We observe seasonality with a period of $s = 12$, which is to be expected due to the monthly nature of our data. Therefore, it is reasonable to differentiate with respect to 12 lags:
+
+```{python}
+#We differentiate the seasonal period
+diff_ts = train.diff(12).dropna()  
+#We plot our data
+plt.clf()
+plt.plot(diff_ts) 
+plt.xlabel('Year') 
+plt.ylabel('Number of Passengers') 
+plt.title('Differenced Air Passengers Time Series') 
+sns.set_theme(style = 'white')
+sns.despine()
+plt.show() 
+```
+
+We should remark that we have also tried differentiating the data by a set of multiples of $12$ ($24$, $36$,...). However, we could not improve the results we obtained from simply differentiating the data once. The resulting ACF and PACF structure is the following:
+
+```{python}
+plot_acf(diff_ts, lags=36) #We plot the acf
+plt.xlabel('Lag')
+plt.ylabel('Autocorrelation') 
+plt.title('ACF') 
+sns.set_theme(style = 'ticks')
+
+sns.despine()
+plt.show() 
+```
+
+```{python}
+plot_pacf(diff_ts, lags=36, method='ywm') #We plot the pacf
+plt.xlabel('Lag') 
+plt.ylabel('Partial autocorrelation') 
+plt.title('PACF') 
+sns.set_theme(style = 'ticks')
+sns.despine()
+plt.show() 
+```
+
+From these graphics we can see that:
+
+1. The seasonal MA structure seems to be of order $4$ or $5$ (the $5 \times 12$ lag is really close to the band so it may be zero).
+1. The seasonal AR structure seems to be of order $1$ (the $2 \times 12$ lag ism again, too close to the band so as to merit much consideration).
+1. The AR structure seems to be of order $3$ or $4$.
+1. The MA structure seems to be of order $3$, $4$ or $5$.
+
+These conclusions seem to be confirmed by the `auto_arima` model which outputs similar orders for the seasonal and ARIMA structures:
+
+```{python,cache=TRUE}
+#We run the auto arima process
+model = auto_arima(train, seasonal=True,  start_p=0, d=1, start_q=0, max_p=5,
+max_d=5, max_q=5, start_P=0, D=1, start_Q=0, max_P=5, max_D=5,max_Q=5, m=12, suppress_warnings=True, stepwise=True)  
+
+#We print the model summary
+print(model.summary()) 
+```
+
+Therefore, we are going to try many different models changing the orders. We will start with the simplest model and work our way up. We will try to have residuals without structure (with null ACF and PACF, that is, they remain within the bands) and among those models with the appropriate residuals we will select the one that minimizes the AIC and MSE. Therefore, we are going to try the following models:
+
+1. ARIMA: $(3, 1, 2)$, seasonal: $(4, 1, 1)$, $s = 12$.
+1. ARIMA: $(4, 1, 2)$, seasonal: $(4, 1, 1)$, $s = 12$.
+1. ARIMA: $(5, 1, 2)$, seasonal: $(4, 1, 1)$, $s = 12$.
+1. ARIMA: $(5, 1, 2)$, seasonal: $(5, 1, 1)$, $s = 12$.
+1. ARIMA: $(5, 1, 3)$, seasonal: $(4, 1, 1)$, $s = 12$.
+1. ARIMA: $(4, 0, 2)$, seasonal: $(4, 1, 1)$, $s = 12$.
+1. ARIMA: $(5, 0, 2)$, seasonal: $(4, 1, 1)$, $s = 12$.
+1. ARIMA: $(5, 0, 2)$, seasonal: $(5, 1, 1)$, $s = 12$.
+1. ARIMA: $(5, 0, 3)$, seasonal: $(4, 1, 1)$, $s = 12$.
+
+We start with the first model and build up from there:
+
+```{python}
+#We define our model
+model1 = ARIMA(train, order=(3, 1, 2), seasonal_order=(4, 1, 1, 12)) 
+#We fit our model
+model1_fit = model1.fit()
+#We make our predictions
+predictions1 = model1_fit.predict(start=len(train), end=len(train)+len(test)-1, typ='levels') 
+#We compute the residuals
+residuals1 = pd.DataFrame(model1_fit.resid)
+```
+
+```{python}
+#We plot the residuals
+residuals1.plot(linewidth = 1, color = 'darkblue', linestyle = '-', title = 'Residuals')
+plt.xlabel('Date')
+plt.ylabel('Residuals')
+sns.set_theme(style = 'white')
+sns.despine()
+
+#We plot the density of the residuals
+residuals1.plot(kind='kde', linewidth = 2, color = 'darkblue', title = 'Density of the residuals', xlabel = 'Value of the residual')
+plt.xlabel('Value of the residual')
+plt.ylabel('Density')
+sns.set_theme(style = 'white')
+sns.despine()
+
+#We plot the ACF
+plot_acf(residuals1)
+plt.title('ACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+
+#We plot the PACF
+plot_pacf(residuals1)
+plt.title('PACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+plt.show()
+
+print(residuals1.describe())
+```
+
+We can already see the residual structure we were looking for: all of the autocorrelations and partial autocorrelations of the residuals lie within the band and, although this result does not mean that they _really_ are zero (specially for those with lags closer to zero) it is a promising result. We are going to try with the rest of the models and check whether this structure is preserved: 
+
+```{python}
+#We do not further comment because it is identical to model1
+model2 = ARIMA(train, order=(4, 1, 2), seasonal_order=(4, 1, 1, 12)) 
+model2_fit = model2.fit() 
+predictions2 = model2_fit.predict(start=len(train), end=len(train)+len(test)-1, typ='levels') 
+residuals2 = pd.DataFrame(model2_fit.resid)
+```
+
+```{python}
+residuals2.plot(linewidth = 1, color = 'darkblue', linestyle = '-', title = 'Residuals')
+plt.xlabel('Date')
+plt.ylabel('Residuals')
+sns.set_theme(style = 'white')
+sns.despine()
+
+residuals2.plot(kind='kde', linewidth = 2, color = 'darkblue', title = 'Density of the residuals', xlabel = 'Value of the residual')
+plt.xlabel('Value of the residual')
+plt.ylabel('Density')
+sns.set_theme(style = 'white')
+sns.despine()
+
+plot_acf(residuals2)
+plt.title('ACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+
+plot_pacf(residuals2)
+plt.title('PACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+plt.show()
+
+print(residuals2.describe())
+```
+
+```{python}
+model3 = ARIMA(train, order=(5, 1, 2), seasonal_order=(4, 1, 1, 12)) 
+model3_fit = model3.fit() 
+predictions3 = model3_fit.predict(start=len(train), end=len(train)+len(test)-1, typ='levels') 
+residuals3 = pd.DataFrame(model3_fit.resid)
+```
+
+```{python}
+residuals3.plot(linewidth = 1, color = 'darkblue', linestyle = '-', title = 'Residuals')
+plt.xlabel('Date')
+plt.ylabel('Residuals')
+sns.set_theme(style = 'white')
+sns.despine()
+
+residuals3.plot(kind='kde', linewidth = 2, color = 'darkblue', title = 'Density of the residuals', xlabel = 'Value of the residual')
+plt.xlabel('Value of the residual')
+plt.ylabel('Density')
+sns.set_theme(style = 'white')
+sns.despine()
+
+plot_acf(residuals3)
+plt.title('ACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+
+plot_pacf(residuals3)
+plt.title('PACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+plt.show()
+
+print(residuals3.describe())
+```
+
+```{python}
+model4 = ARIMA(train, order=(5, 1, 3), seasonal_order=(4, 1, 1, 12)) 
+model4_fit = model4.fit() 
+predictions4 = model4_fit.predict(start=len(train), end=len(train)+len(test)-1, typ='levels') 
+residuals4 = pd.DataFrame(model4_fit.resid)
+```
+
+```{python}
+residuals4.plot(linewidth = 1, color = 'darkblue', linestyle = '-', title = 'Residuals')
+plt.xlabel('Date')
+plt.ylabel('Residuals')
+sns.set_theme(style = 'white')
+sns.despine()
+
+residuals4.plot(kind='kde', linewidth = 2, color = 'darkblue', title = 'Density of the residuals', xlabel = 'Value of the residual')
+plt.xlabel('Value of the residual')
+plt.ylabel('Density')
+sns.set_theme(style = 'white')
+sns.despine()
+
+plot_acf(residuals4)
+plt.title('ACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+
+plot_pacf(residuals4)
+plt.title('PACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+plt.show()
+
+print(residuals4.describe())
+```
+
+```{python}
+model5 = ARIMA(train, order=(5, 1, 2), seasonal_order=(5, 1, 1, 12)) 
+model5_fit = model5.fit() 
+predictions5 = model5_fit.predict(start=len(train), end=len(train)+len(test)-1, typ='levels') 
+residuals5 = pd.DataFrame(model5_fit.resid)
+```
+
+```{python}
+residuals5.plot(linewidth = 1, color = 'darkblue', linestyle = '-', title = 'Residuals')
+plt.xlabel('Date')
+plt.ylabel('Residuals')
+sns.set_theme(style = 'white')
+sns.despine()
+
+residuals5.plot(kind='kde', linewidth = 2, color = 'darkblue', title = 'Density of the residuals', xlabel = 'Value of the residual')
+plt.xlabel('Value of the residual')
+plt.ylabel('Density')
+sns.set_theme(style = 'white')
+sns.despine()
+
+plot_acf(residuals5)
+plt.title('ACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+
+plot_pacf(residuals5)
+plt.title('PACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+plt.show()
+
+print(residuals5.describe())
+```
+
+```{python}
+model6 = ARIMA(train, order=(4, 0, 2), seasonal_order=(4, 1, 1, 12)) 
+model6_fit = model6.fit() 
+predictions6 = model6_fit.predict(start=len(train), end=len(train)+len(test)-1, typ='levels') 
+residuals6 = pd.DataFrame(model6_fit.resid)
+```
+
+```{python}
+residuals6.plot(linewidth = 1, color = 'darkblue', linestyle = '-', title = 'Residuals')
+plt.xlabel('Date')
+plt.ylabel('Residuals')
+sns.set_theme(style = 'white')
+sns.despine()
+
+residuals6.plot(kind='kde', linewidth = 2, color = 'darkblue', title = 'Density of the residuals', xlabel = 'Value of the residual')
+plt.xlabel('Value of the residual')
+plt.ylabel('Density')
+sns.set_theme(style = 'white')
+sns.despine()
+
+plot_acf(residuals6)
+plt.title('ACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+
+plot_pacf(residuals6)
+plt.title('PACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+plt.show()
+
+print(residuals6.describe())
+```
+
+We can see that the residuals do not have the white noise structure when $d = 0$. We are going to try some other models in order to discard that this is not due to happenstance but we will see that this is a common ocurrence:
+
+```{python}
+model7 = ARIMA(train, order=(5, 0, 2), seasonal_order=(4, 1, 1, 12)) 
+model7_fit = model7.fit() 
+predictions7 = model7_fit.predict(start=len(train), end=len(train)+len(test)-1, typ='levels') 
+residuals7 = pd.DataFrame(model7_fit.resid)
+```
+
+```{python}
+residuals7.plot(linewidth = 1, color = 'darkblue', linestyle = '-', title = 'Residuals')
+plt.xlabel('Date')
+plt.ylabel('Residuals')
+sns.set_theme(style = 'white')
+sns.despine()
+
+residuals7.plot(kind='kde', linewidth = 2, color = 'darkblue', title = 'Density of the residuals', xlabel = 'Value of the residual')
+plt.xlabel('Value of the residual')
+plt.ylabel('Density')
+sns.set_theme(style = 'white')
+sns.despine()
+
+plot_acf(residuals7)
+plt.title('ACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+
+plot_pacf(residuals7)
+plt.title('PACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+plt.show()
+
+print(residuals7.describe())
+```
+
+```{python}
+model8 = ARIMA(train, order=(5, 0, 3), seasonal_order=(4, 1, 1, 12)) 
+model8_fit = model8.fit() 
+predictions8 = model8_fit.predict(start=len(train), end=len(train)+len(test)-1, typ='levels') 
+residuals8 = pd.DataFrame(model8_fit.resid)
+```
+
+```{python}
+residuals8.plot(linewidth = 1, color = 'darkblue', linestyle = '-', title = 'Residuals')
+plt.xlabel('Date')
+plt.ylabel('Residuals')
+sns.set_theme(style = 'white')
+sns.despine()
+
+residuals8.plot(kind='kde', linewidth = 2, color = 'darkblue', title = 'Density of the residuals', xlabel = 'Value of the residual')
+plt.xlabel('Value of the residual')
+plt.ylabel('Density')
+sns.set_theme(style = 'white')
+sns.despine()
+
+plot_acf(residuals8)
+plt.title('ACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+
+plot_pacf(residuals8)
+plt.title('PACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+plt.show()
+
+print(residuals8.describe())
+```
+
+```{python}
+model9 = ARIMA(train, order=(5, 0, 2), seasonal_order=(5, 1, 1, 12)) 
+model9_fit = model9.fit() 
+predictions9 = model9_fit.predict(start=len(train), end=len(train)+len(test)-1, typ='levels') 
+residuals9 = pd.DataFrame(model9_fit.resid)
+```
+
+```{python}
+residuals9.plot(linewidth = 1, color = 'darkblue', linestyle = '-', title = 'Residuals')
+plt.xlabel('Date')
+plt.ylabel('Residuals')
+sns.set_theme(style = 'white')
+sns.despine()
+
+residuals9.plot(kind='kde', linewidth = 2, color = 'darkblue', title = 'Density of the residuals', xlabel = 'Value of the residual')
+plt.xlabel('Value of the residual')
+plt.ylabel('Density')
+sns.set_theme(style = 'white')
+sns.despine()
+
+plot_acf(residuals9)
+plt.title('ACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+
+plot_pacf(residuals9)
+plt.title('PACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+plt.show()
+
+print(residuals9.describe())
+```
+
+We are not going to consider models with $d = 0$ because their residuals are not white noise. However, we can see that all models with $d = 1$ have the appropriate residuals structure. Therefore, the only way to choose between them is through numerical criteria like the AIC and the MSE:
+
+```{python}
+#We print the AIC
+print(model1_fit.aic)
+print(model2_fit.aic)
+print(model3_fit.aic)
+print(model4_fit.aic)
+print(model5_fit.aic)
+
+
+#We plot our results
+AIC = [model1_fit.aic, model2_fit.aic, model3_fit.aic, model4_fit.aic, model5_fit.aic]
+plt.plot([1,2,3,4,5], AIC, linewidth = 2, marker = 'o', color = 'darkblue', linestyle = ':')
+plt.xlabel('Model')
+plt.ylabel('AIC')
+plt.title('Comparison of models (using AIC)')
+sns.set_theme(style = 'white')
+sns.despine()
+plt.show()
+```
+
+```{python}
+#We print the MSE
+print(model1_fit.mse)
+print(model2_fit.mse)
+print(model3_fit.mse)
+print(model4_fit.mse)
+print(model5_fit.mse)
+print(model6_fit.mse)
+print(model7_fit.mse)
+print(model8_fit.mse)
+print(model9_fit.mse)
+
+#We plot the MSE
+MSE = [model1_fit.mse, model2_fit.mse, model3_fit.mse, model4_fit.mse, model5_fit.mse]
+plt.plot([1, 2, 3, 4, 5], MSE, linewidth = 2, marker = 'o', color = 'darkblue', linestyle = ':')
+plt.xlabel('Model')
+plt.ylabel('MSE')
+plt.title('Comparison of models (using MSE)')
+sns.set_theme(style = 'white')
+sns.despine()
+plt.show()
+```
+
+We can see that the model with the lowest `AIC` is model 3 (the one with $(5, 1, 2)$, seasonal: $(4, 1, 1)$, $s = 12$). Moreover, although it is not the one with the lowest MSE (that would be model 5), its MSE is close to the lowest. Therefore, this is the model that we are going to use for our predictions. Moreover we already have its performance metrics (`AIC` and `MSE`). Therefore, let us store this information:
+
+```{python}
+#We store the final model and its predictions
+model = model3_fit
+model_mse = model.mse
+model_aic = model.aic
+predictions = predictions3
+```
+
+# 4. Bootstrap
+
+In order to determine standard error and confidence intervals for the coefficients we can make the following procedure:
+
+1. Obtain a bootstrap sample for the coefficients.
+1. Estimate the standard error using the standard deviation of the sample.
+1. Estimate the confidence intervals using the quantile intervals.
+
+In order to obtain a bootstrap sample we have decided to implement two different procedures, the _residuals method_ and _block method_. We start by explaining the _residuals method_:
+
+1. We start by estimating the parameters of the original series.
+1. Then we compute the residuals of the coefficients.
+1. Then we sample $n$ elements from the residuals with replacement ($n$ being the length of the series) and we simulate a replicate of the time series with the estimated parameters and add the sampled residuals.
+1. We estimate the coefficients of the new series.
+
+This method is implemented through the following code:
+
+```{r,cache=TRUE,warning=FALSE}
+#We first store important variables:
+
+#Number of bootstrap samples
+B <- 1000
+
+#Parameters of the ARIMA model
+order_arima = c(5, 1, 2)
+order_seas = c(4, 1, 1)
+s = 2
+
+#Training data
+y = data_train[,2]
+len_train = length(data_train[,2])
+
+#We now fit the model
+est.arima = arima(y, order = order_arima, seasonal = list(order = order_seas, period = s), method = 'CSS')
+#We store its coefficients
+coefficients <- coef(est.arima)
+#And residuals
+residuals <- est.arima$residuals
+
+#We implement the residuals method
+boot.residuals <- function(){
+  #We sample a list of indices
+  index <- sample(1:len_train, size = len_train, replace = TRUE)
+  #We extract the residual associated to this indices
+  resid_boot <- residuals[index]
+  #We simulate an ARIMA model with residuals
+  model <- Arima(ts(resid_boot,freq=12), order=order_arima,
+                 seasonal=list(order = order_seas, period = s),
+                 fixed=coefficients)
+  simul <- simulate(model, nsim = len_train)
+  #We estimate the coefficients from this model
+  est.arima.boot <- arima(simul, order = order_arima,
+                          seasonal = list(order = order_seas, period = s),
+                          include.mean = FALSE,method='CSS')
+  return(coef(est.arima.boot))
+}
+
+#We simulate B samples
+srs.residuals <- replicate(B, boot.residuals())
+```
+
+On the other hand, we have the _block procedure_ which consists of the following:
+
+1. We divide our data into a series of blocks of a fixed length.
+1. We obtain a sample with replacement of these blocks and put them together.
+1. We estimate the coefficients from this sample.
+
+This method is implemented in the following code:
+
+```{r,cache=TRUE}
+#We define the block length and the number of blocks (in our case we choose yearly data)
+blockLen = 12
+N = length(y)
+blockNum = round(N/blockLen)
+
+#Block procedure:
+betaBlock = replicate(B, {
+  #Start: we sample the starting positions of the blocks
+  start = sample(1:(N - blockLen + 1), size = blockNum, replace = TRUE)
+  #We obtain the indices of the rest of the elements of the blocks
+  blockedIndices = c(sapply(start, function(x) seq(x, x + blockLen - 1)))
+  #We obtain the sample of the blocks
+  eso = y[blockedIndices]
+  #We estimate the coefficients
+  coef(arima(eso, order = order_arima, seasonal = list(order = order_seas, period = 12), method = 'CSS'))
+})
+```
+
+We are now going to obtain make computations using these samples. In particular:
+
+1. We are going to plot the density of each bootstrap sample (to get an idea of the distribution of the coefficients).
+1. We are going to compute its standard deviation.
+1. We are going to compute its mean value.
+1. We are going to compute its confidence intervals.
+
+This is done automatically with the following code:
+
+```{r,cache=TRUE,warning=FALSE}
+results <- function(beta.boot, alfa = 0.05){
+  #We store the names of the coefficients
+  names <- c('ar1', 'ar2', 'ar3', 'ar4', 'ar5',
+             'ma1', 'ma2', 'sar1', 'sar2', 'sar3', 'sar4', 'sma')
+  #Vector with the standard deviations
+  sds <- rep(0, 12)
+  #Matrix with the confidence intervals
+  CI <- matrix(0, nrow = 12, ncol = 2)
+  #For each coefficient:
+  par(mfrow=c(2,3))
+  for(i in 1:12){
+    print(paste('Coefficient: ', names[i]))
+    print('')
+    #We plot its density
+    plot(density(beta.boot[i,]), col = 'royalblue3', lwd = 2, main = paste('Density of ', names[i]))
+    print('Left: variance of the coefficient, right: estimated bootstrap sd.')
+    #We compute its standard deviation
+    sds[i] <- sd(beta.boot[i,])
+    #We compare it with the estimated variance
+    print(c(sqrt(vcov(est.arima))[i,i], sds[i]))
+    print('Confidence interval for the coefficient')
+    #We compute the confidence interval
+    CI[i,] <- quantile(beta.boot[i,], probs = c(alfa/2, 1-alfa/2))
+    print(CI[i,])
+    print('--------------')
+    print('')
+  }
+  #We store our results in a list
+  return(list(coef = colMeans(t(beta.boot)), intervals = CI, sds = sds))
+}
+
+#We obtain the results for both samples
+results.residuals <- results(srs.residuals)
+results.block <- results(betaBlock)
+
+#And store each variable
+coef.residuals <- results.residuals$coef
+CI1 <- results.residuals$intervals
+sds1 <- results.residuals$sds
+coef.block <- results.block$coef
+CI2 <- results.block$intervals
+sds2 <- results.block$sds
+```
+
+The densities obtained through the two different methods can be compared using the densities plots showed above. At first sight, the main takeaway is the general difference in variance that the two methods show: Moving blocks bootstrap seems to have a much smaller variation around the mode than residuals-based bootstrap. Although there are some slight exceptions, more densities obtained through residuals-based bootstrap seems to be bimodal than those obtained through moving blocks bootstrap, especially when focusing on the coefficeints of the seasonal ARIMA. Both of these feature seem to indicate that, for the same number of bootstrap simulations, moving blocks boostrap shows a better convergence than residuals-based bootstrap.
+
+We can visualize our results with the following plot:
+
+```{r}
+plot(1:12, coef.residuals, main = 'Intervals for the coefficients',
+     xlab = 'Coefficient', ylab = 'Value', ylim = c(-1,1), col = 'blue', bg = 'blue', pch = 21,xaxt='n')
+for(i in 1:12){
+  lines(c(i,i), CI1[i,], col = 'deepskyblue3')
+  points(c(i,i), CI1[i,], pch = 3, col = 'deepskyblue3')
+}
+
+points(1:12, coef.block,xlab = 'Coefficient', ylab = 'Value', ylim = c(-1,1), col = 'red', bg = 'red', pch = 21)
+for(i in 1:12){
+  lines(c(i,i), CI2[i,], col = 'red')
+  points(c(i,i), CI2[i,], pch = 3, col = 'red')
+}
+
+legend(8.5, 1.05, legend=c("Residuals", "Blocks"), fill=c("blue","red"))
+names.coef <- c('ar1', 'ar2', 'ar3', 'ar4', 'ar5',
+             'ma1', 'ma2', 'sar1', 'sar2', 'sar3', 'sar4', 'sma')
+axis(side=1,at=1:12,labels=names.coef)
+```
+
+As we can see, the coefficients obtained through the two approaches range from essentially taking the same value to being radically different. Both bootstrap estimates can be compared with the coefficients estimated through the Python `arima` implementation, after which we find that most of moving blocks estimates are compatible with them, whereas several residuals-based estimates are quite far from it.
+Furthermore, the confidence intervals for some coefficients include 0 within their range. This could indicate that said coefficients are actually 0 and thus the model considered would not be the most appropriate. However, the previous results from the comparison of several different ARIMA models suggest that this model is the correct one. Even still, this same process could be carried out with the rest of the model to check whether the confidence intervals of their coefficients would include 0.
+
+
+# 5. Predictions
+
+We are now ready to discuss our predictions. In reality they have already been computed. However, we can visualize them along with the testing set:
+
+```{python}
+plt.clf()
+plt.plot(test.index, test.values, label='Testing data',color="darkorange")
+plt.plot(test.index, predictions, label='Predictions',color="darkblue", alpha = 0.9, linestyle = '--') 
+plt.title('Performance of the model')
+plt.ylabel('Average temperature (ºC)')
+plt.xlabel('Date')
+sns.set_theme(style = 'white')
+sns.despine()
+plt.legend() 
+plt.show()
+```
+
+We can see that our fit is quite good. We can see that it fails to capture the most extreme behavior we can see in the highest peaks and the lowest valleys, but in general it fits the data quite well. This is confirmed by both its `MSE` and `AIC`.
+
+# 6. Vector Autoregressive Models (VAR)
+
+## 6.1. A brief introduction to the topic
+
+In this course we have extensively studied time series models in which we observed the evolution of one single variable through time. However, there are many scenarios for which it is interesting to check the evolution of many variables at the same time. For example, in a finance context one could be interested in price changes for multiple stocks in a portfolio, or when we deal with epidemics it is useful to track different groups of the population (say, sick, infected and recovered) in order to see the advancement of the disease. However, we do not need to look elsewhere in order to find an application: the dataset we are using tracks many variables other than temperature, many of which are related to each other. This is why there is a clear need to study such systems. Fortunately there is a whole subfield of time series modelling that deals with this type of data.
+
+The simplest multivariate time series model one could come up with is the so-called _VAR(1)_ model:
+
+$$
+\mathbf{y}_t = \mathbf{\mu} +  \mathbf{A}_1 \mathbf{y}_{t-1} + \mathbf{a}_{t}
+$$
+
+Where we have used bold to indicate the fact that we are dealing with vectors and matrices. $\mathbf{a}_{t}$ is a vector of innovations which follows a mutivariate normal distribution with a null mean vector and a diagonal covariance matrix. Let us assume for simplicity that $\mathbf{\mu} = 0$. 
+
+This model allows for much of the manipulations we saw for the _AR(1)_ model, but special care needs to be put in order to deal with the matrix operators. For example, let us achieve the $MA(\infty)$ representation of the process. In order to do this we can write it using the lag operator in the following way:
+
+$$
+(\mathbf{I} - \mathbf{A}_1 B) \mathbf{y}_t = \mathbf{a}_t
+$$
+The matrix operator we can see on the left-hand side of the equation is invertible (in which case we will say the proccess is _invertible_) if and only if the roots of the equation:
+
+$$
+det(\mathbf{I} - \mathbf{A}_1 z) = 0
+$$
+(Where we are taking $z$ as a complex variable) lie outside of the unit circle. In that case we can invert the operator and make the substitution:
+
+$$
+\mathbf{y}_t = (\mathbf{I} - \mathbf{A}_1 B)^{-1} \mathbf{a}_t
+$$
+If $\mathbf{A}_1$ has matrix norm strictly less than one (in which case we say that the proccess is _stable_) then we $(\mathbf{I} - \mathbf{A}_1 \mathbf{B})^{-1}$ admits an expression as a series on $\mathbf{A}_1$, namely:
+
+$$
+(\mathbf{I} - \mathbf{A}_1 \mathbf{B})^{-1} = \sum_{i = 0}^{\infty} \mathbf{A}_1^i B^i
+$$
+Which implies that we can express the _VAR(1)_ model as:
+
+$$
+\mathbf{y}_t = \left( \sum_{i = 0}^{\infty} \mathbf{A}_1^i B^i \right) \mathbf{a}_t = \sum_{i = 0}^{\infty} \mathbf{A}_1^i \mathbf{a}_{t-i}
+$$
+With this we have arrived at the $MA(\infty)$ representation of the _VAR(1)_ process. However, the previous discussion can result somewhat dry. Perhaps a more natural way of arriving to this by recursive substitution in the first equation:
+
+$$
+\mathbf{y}_t = \mathbf{A}_{1}^{j+1}\mathbf{y}_{y-(j+1)} + \sum_{i = 0}^j A_1^i \mathbf{u}_{t - i}
+$$
+
+Assuming that the process is stable we can take the limit $j \longrightarrow \infty$ and write:
+
+$$
+\mathbf{y}_t = \sum_{i = 0}^{\infty} \mathbf{A}_1^i \mathbf{u}_{t-i} 
+$$
+This discussion also applies to the general _VAR(p)_ model, which has the following form:
+
+$$
+\mathbf{y}_t = \sum_{i = 1}^{p} \mathbf{A}_i \mathbf{y}_{t-i} + \mathbf{a}_{t}
+$$
+
+We could express it using a matrix operator that takes the form of a polynomial on the lag operator:
+
+$$
+\mathbf{y}_t = \sum_{i=1}^p A_{i} \mathbf{y}_{t-i} + \mathbf{u}_t = \sum_{i=1}^p A_{i} B^i \mathbf{y}_{t} + \mathbf{u}_t = \mathbf{A}(B) \mathbf{y}_t + \mathbf{u}_t
+$$
+Where
+
+$$
+A(B) = \sum_{i=1}^p A_{i} B^i
+$$
+
+The inversion of the operator $(I - \mathbf{A}(B))$ would allow us to get conditions on the matrices $\mathbf{A}_i$ as well as the _MA($\infty$)_ representation, just like we saw in the one dimensional case. However, in the vector case, all theoretical complications are restricted to the _VAR(1)_ case because we can express any _VAR(p)_ model as a _VAR(1)_ of vectores of higher dimension. The way to do this is the following:
+
+$$
+\begin{pmatrix}
+\mathbf{y}_t \\
+\mathbf{y}_{t-1} \\
+\mathbf{y}_{t-2} \\
+...\\
+\mathbf{y}_{t-(p-1)}\\
+\mathbf{y}_{t-p}
+\end{pmatrix}
+=
+\begin{pmatrix}
+\mathbf{A}_1 & \mathbf{A}_2 & ... & \mathbf{A}_{p-1} & \mathbf{A}_p\\
+\mathbf{I} & \mathbf{0} & ... & \mathbf{0} & \mathbf{0} \\
+\mathbf{0} & \mathbf{I} & ... & \mathbf{0} & \mathbf{0} \\
+... & ... & ... & ... & ... \\
+\mathbf{0} & \mathbf{0} & ... & \mathbf{I} & \mathbf{0} \\
+\mathbf{0} & \mathbf{0} & ... & \mathbf{0} & \mathbf{I} \\
+\end{pmatrix}
+\cdot
+\begin{pmatrix}
+\mathbf{y}_{t-1}  \\
+\mathbf{y}_{t-2} \\
+\mathbf{y}_{t-3} \\
+...\\
+\mathbf{y}_{t-(p-2)}\\
+\mathbf{y}_{t-(p-1)}
+\end{pmatrix}
++
+\begin{pmatrix}
+\mathbf{a}_t \\
+\mathbf{0} \\
+\mathbf{0} \\
+... \\
+\mathbf{0} \\
+\mathbf{0}
+\end{pmatrix}
+$$
+
+So the study of the _VAR(1)_ model is more than enough for vector autoregression (at least from the theoretical point of view). 
+
+In a more practical setting, many concrete aspects of the implementation of the _VAR_ models are very similar to those that we have already seen in the 1D case (parameter estimation, bootstrap procedures,...). For example, if we have computed the parameters of the model we can make forecasts using the equations:
+
+$$
+\tilde{\mathbf{y}}_{t+1|t} = \sum_{i = 1}^p \mathbf{A}_i \mathbf{y}_{t+1-i}
+$$
+$$
+\tilde{\mathbf{y}}_{t+2| t} = \mathbf{A}_1 \tilde{\mathbf{y}}_{t+1| t} + \sum_{i = 2}^p \mathbf{A}_i \mathbf{y}_{t+2-i}
+$$
+If we proceed until we have estimated $p$ instances of the series:
+
+$$
+\tilde{\mathbf{y}}_{t+p+2| t} =  \sum_{i = 1}^p \mathbf{A}_i \tilde{\mathbf{y}}_{t+p+1-i}
+$$
+
+That is, the procedure is identical to that of the one dimensional case: we substitute the available data to make the first forecast and the we start using our forecasts as if it was from the original series. Eventually we end up using our forecasts for all the terms of the sum (provided we need to predict that far into the future).
+
+More sophisticated methods (like bootstrap simulation of the predictions) are also available. However, they are either way beyond the scope of this report or almost identical to the one dimensional case. We are satisfied with just showcasing a brief introduction to the topic.  
+
+## 6.2. Application to our dataset.
+
+Our original dataset recorded more variables other than the average temperature. This is why it is interesting to check if we can build a model that relates two different variables and explains their evolution and interactions. In particular, we are going to propose a _VAR_ model for the average temperature and the `"EMNT"` (Which represents the extreme minimum temperature for the month). Therefore, we are looking for a relationship of the form:
+
+$$
+M_{t} = a^1_{11} M_{t-1} + a^1_{12} T_{t-1} +...+ a^p_{11} M_{t-p} + a^p_{12} T_{t-p} + a_{t,1} \\
+T_{t} = a^1_{21} M_{t-1} + a^1_{22} T_{t-1} +...+a^p_{11} M_{t-p} + a^p_{12} T_{t-p} + a_{t,2}
+$$
+Where $M_t$ represents the `"EMNT"` variable and $T_t$ `"TAVG"`. For simplicity we have not written an explicit relationship between contemporary $M$ and $T$.
+
+In order to explore this model we are going to use the `vars` package:
+
+```{r, warning = FALSE}
+#We load the required libraries
+library(vars)
+library(astsa)
+```
+
+We load our data and store the relevant variables:
+
+```{r}
+data.var = read.csv("3610412.csv")
+data.var = data.var[-c(1,2)]
+data.var = data.var[,c('EMNT','TAVG')]
+series.var = ts(data.var, start=c(1936,1,1), freq=12)
+```
+
+We can plot our variables together to see if they are related:
+
+```{r}
+autoplot(series.var, alpha = 0.8, lwd = 1.2) + 
+  ggtitle('Representation of our variables') +
+  xlab('Date') +
+  ylab('Temperature (ºC)') +
+  theme_minimal()
+```
+
+This graphic is somewhat cluttered. In order to better visualize it we can restrict ourselves to a smaller time frame:
+
+```{r}
+autoplot(series.var, lwd = 1.2) +
+  xlim(1950, 1970) +
+  ggtitle('Representation of our variables') +
+  xlab('Date') +
+  ylab('Temperature (ºC)') +
+  theme_minimal()
+```
+
+We can see that there is a strong correlation between the two variables: their peaks and valleys are somewhat aligned. This suggests that our analysis will be fruitful. Let us fit a _VAR(2)_ model. First, we should carry out another train-test split:
+
+```{r}
+#First 70 years are used for training
+var_train = data.var[c(1:852),]
+var.series_train = ts(var_train, start=c(1936,1,1), freq=12)
+
+#Last 17 years are used for testing
+var_test = data.var[c(853:1056),] 
+var.series_test = ts(var_test, start=c(2001,1), freq=12)
+```
+
+
+```{r}
+fitvar = VAR(na.omit(var_train),p=2) 
+summary(fitvar)
+print(mean(fitvar$varresult$EMNT$residuals^2))
+print(mean(fitvar$varresult$TAVG$residuals^2))
+```
+
+
+We can see a strong correlation between the two variables which suggests that there is a relationship to study between these two variables. We already saw this correlation in the plot, but we are now formalizing this notion. We can further investigate our data by plotting the autocorrelation function for both residuals:
+
+```{r}
+#We plot the acfs:
+acf(residuals(fitvar)[,1], main = 'ACF of the residuals of EMNT')
+acf(residuals(fitvar)[,2], main = 'ACF of the residuals of AVGT')
+```
+
+We can see the striking seasonal behavior of our data: in lags which are multiples of $12$ we can see non-trivial contributions to the ACF. In order to mitigate this effect we should fit a VARIMA model. However, this kind of process is well beyond the scope of this report. 
+
+Nonetheless, it is interesting to try to find the best _VAR_ process possible. In our case let us try to fit the model that will minimize the sum of squared residuals trying different values for $p$:
+
+```{r}
+#We initialize our results
+MSE <- 1000
+opt_p <- 0
+#We find the optimal p
+for(p in 1:20){
+  #We fit the model
+  model <- VAR(na.omit(var_train), p = p)
+  # perform forecast
+  pred = predict(model,n.ahead=204)
+  # Compute the MSE
+  #MSE1 <- mean(model$varresult$EMNT$residuals^2)
+  MSE1 <- mse(var_test$EMNT, pred$fcst$EMNT[1,])
+  #MSE2 <- mean(model$varresult$TAVG$residuals^2)
+  MSE2 <- mse(var_test$TAVG, pred$fcst$TAVG[11])
+  # If we reduce the MSE we update our parameters
+  if(MSE1 + MSE2 <= MSE){
+    opt_p <- p
+    MSE <- MSE1 + MSE2
+    best.model = model
+  }
+}
+#We print the optimal parameters
+print(opt_p)
+print(MSE)
+```
+
+We can see that the optimal model is the one which $p = 20$. We can try to plot its ACF structure and see if we have made any improvement:
+
+```{r}
+#We plot the acfs:
+acf(residuals(model)[,1], lag.max = 40, main = 'ACF of the residuals of EMNT')
+acf(residuals(model)[,2], lag.max = 40, main = 'ACF of the residuals of AVGT')
+```
+
+We have improved somewhat our fit. However, this is only true up to the twentieth lag, and this apparently fails for the `"EMNT"` variable. We can still see lags at higher multiples of $12$, so we have still failed to explain our process. Moreover, this suggest that we only reduced the _MSE_ due to overfitting our data. Let us check if we could further reduce it by simply increasing the number of variables:
+
+```{r}
+new_fit <- VAR(na.omit(var_train), p = 50)
+# produce new forecasts
+pred = predict(new_fit,n.ahead=204)
+#Compute the MSE
+MSE1 <- mse(var_test$EMNT, pred$fcst$EMNT[1,])
+MSE2 <- mse(var_test$TAVG, pred$fcst$TAVG[11])
+
+print(MSE)
+print(MSE1 + MSE2)
+```
+
+As we can see increasing the number of lags considered does not decrease the _MSE_. In any case, the model will always fail to explain the true nature of the data due to the lack of a way of accounting for seasonality. In conclusion, while we have been able to formalize the relationship between two variables of our dataset, we have been incapable of fully explaining our data with the _VAR_ model. Nonetheless, it is apparent that a seasonal vector ARIMA model (seasonal VARIMA) would be more appropriate to deal with this kind of data and we have reason to believe that it would outperform our ARIMA model (at least in principle). Nonetheless, this topic is way beyond the scope of the present report and remains an interesting direction of further research.
+
+# 7. Conclusions
+
+In this report we have continued our analysis of the temperature data at a certain location. In particular, we have successfully built a seasonal ARIMA with the seasonal parameter $s = 12$, seasonal ARIMA order $(4, 1, 1)$ and ARIMA components $(5, 1, 2)$. Furthermore, we can check the parameter estimation:
+
+```{python}
+print(model5_fit)
+```
+
+In order to select this model we used the AIC and MSE as criterion to choose among a series of models. The performance of each model is summarized in the following figures:
+
+```{python, echo = FALSE}
+plt.plot([1,2,3,4,5], AIC, linewidth = 2, marker = 'o', color = 'darkblue', linestyle = ':')
+plt.xlabel('Model')
+plt.ylabel('AIC')
+plt.title('Comparison of models (using AIC)')
+sns.set_theme(style = 'white')
+sns.despine()
+plt.show()
+```
+
+```{python, echo = FALSE}
+plt.plot([1,2,3,4,5], MSE, linewidth = 2, marker = 'o', color = 'darkblue', linestyle = ':')
+plt.xlabel('Model')
+plt.ylabel('MSE')
+plt.title('Comparison of models (using MSE)')
+sns.set_theme(style = 'white')
+sns.despine()
+plt.show()
+```
+
+Moreover, we checked the structure of its residuals to see that they truly are white noise:
+
+```{python, echo = FALSE}
+residuals5.plot(linewidth = 1, color = 'darkblue', linestyle = '-', title = 'Residuals')
+plt.xlabel('Date')
+plt.ylabel('Residuals')
+sns.set_theme(style = 'white')
+sns.despine()
+
+residuals5.plot(kind='kde', linewidth = 2, color = 'darkblue', title = 'Density of the residuals', xlabel = 'Value of the residual')
+plt.xlabel('Value of the residual')
+plt.ylabel('Density')
+sns.set_theme(style = 'white')
+sns.despine()
+
+plot_acf(residuals5)
+plt.title('ACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+
+plot_pacf(residuals5)
+plt.title('PACF of the residuals')
+sns.set_theme(style = 'ticks')
+sns.despine()
+plt.show()
+```
+
+Furthermore, we have used bootstrap methods to compute the coefficients and $95\%$ confidence intervals for them:
+
+| Coefficient | Estimation |Confidence interval (residuals) | Standard error (residuals) | Confidence interval (blocks) | Standard error (blocks)|
+|-------------|:-----------|:------------------:|:------------------:|:------------------:|:------------------:|
+| ar1         | `r coefficients[[1]]` | `r CI1[1,]`         |`r sds1[1]`         |`r CI2[1,]`         |`r sds2[1]`         |
+| ar2         | `r coefficients[[2]]` | `r CI1[2,]`         |`r sds1[2]`         |`r CI2[2,]`         |`r sds2[2]`         |
+| ar3         | `r coefficients[[3]]` | `r CI1[3,]`         |`r sds1[3]`         |`r CI2[3,]`         |`r sds2[3]`         |
+| ar4         | `r coefficients[[4]]` | `r CI1[4,]`         |`r sds1[4]`         |`r CI2[4,]`         |`r sds2[4]`         |
+| ar5         | `r coefficients[[5]]` | `r CI1[5,]`         |`r sds1[5]`         |`r CI2[5,]`         |`r sds2[5]`         |
+| ma1         | `r coefficients[[6]]` | `r CI1[6,]`         |`r sds1[6]`         |`r CI2[6,]`         |`r sds2[6]`         |
+| ma2         | `r coefficients[[7]]` | `r CI1[7,]`         |`r sds1[7]`         |`r CI2[7,]`         |`r sds2[7]`         |
+| sar1        | `r coefficients[[8]]` | `r CI1[8,]`         |`r sds1[8]`         |`r CI2[8,]`         |`r sds2[8]`         |
+| sar2        | `r coefficients[[9]]` | `r CI1[9,]`         |`r sds1[9]`         |`r CI2[9,]`         |`r sds2[9]`         |
+| sar3        | `r coefficients[[10]]`| `r CI1[10,]`        |`r sds1[10]`        |`r CI2[10,]`        |`r sds2[10]`        |
+| sar4        | `r coefficients[[11]]`| `r CI1[11,]`        |`r sds1[11]`        |`r CI2[11,]`        |`r sds2[11]`        |
+| sma         | `r coefficients[[12]]`| `r CI1[12,]`        |`r sds1[12]`        |`r CI2[12,]`        |`r sds2[12]`        |
+
+This table can be easily visualized with the following figures:
+
+```{r, echo = FALSE}
+plot(1:12, coefficients, main = 'Intervals for the coefficients (residual method) ',
+     xlab = 'Coefficient', ylab = 'Value', ylim = c(-1,1), col = 'blue', bg = 'blue', pch = 21)
+for(i in 1:12){
+  lines(c(i,i), CI1[i,], col = 'deepskyblue3')
+  points(c(i,i), CI1[i,], pch = 3, col = 'deepskyblue3')
+}
+
+plot(1:12, coefficients, main = 'Intervals for the coefficients (block method) ',
+     xlab = 'Coefficient', ylab = 'Value', ylim = c(-1,1), col = 'blue', bg = 'blue', pch = 21)
+for(i in 1:12){
+  lines(c(i,i), CI2[i,], col = 'deepskyblue3')
+  points(c(i,i), CI2[i,], pch = 3, col = 'deepskyblue3')
+}
+```
+
+With this estimations we were able to make predictions which can be visualized in the following figure:
+
+```{python, echo = FALSE}
+plt.clf()
+plt.plot(test.index, test.values, label='Testing data',color="cyan")
+plt.plot(test.index, predictions, label='Predictions',color="darkblue", alpha = 0.9, linestyle = '--') 
+plt.title('Performance of the model')
+plt.ylabel('Average temperature (ºC)')
+plt.xlabel('Date')
+sns.set_theme(style = 'white')
+sns.despine()
+plt.legend() 
+plt.show()
+```
+
+Finally, we have explained the main ideas behind _Vector Autoregressive Models_ and applied them to our data. We have succesfully established a model that relates the average temperature with the minimum, but we have failed to fully explain the behavior of the process. The reason behind this is that _VAR_ models do not account for seasonality. This is why we have proposed the application of a seasonal VARIMA model as a way of building upon our results. Nonetheless, we have managed to formalize the r    elationship between the two variables, which we could not have done with the regular ARIMA model alone.
+
+
