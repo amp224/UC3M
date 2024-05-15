@@ -1,0 +1,1849 @@
+---
+title: "Final Assignment"
+author: "Nile Ansotegi, Lúa Arconada and Alejandro Macías"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    fig_width: 10.5
+    fig_height: 7.5
+    fig_caption: yes
+    df_print: paged
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+EN EL ASSIGNMENT 3 HAY QUE AÑADIR EN EL GENERAL EL SECOND FIT OUT
+
+# Assignment 1
+
+```{r,warning=FALSE,message=FALSE}
+library(igraph)
+library(chorddiag)
+set.seed(1234)
+```
+
+We present a social network dataset based on interactions between members of the 117th United States Congress between Feb. 9, 2022, and June 9, 2022. The dataset takes the form of a directed, weighted network in which the edge weights are empirically obtained “probabilities of influence” between all pairs of Congresspeople. 
+
+We have 475 vertices and 13289 edges. 
+
+Twitter's application programming interface (API) V2 was used to determine the number of times each member of Congress retweeted, quote tweeted, replied to, or mentioned other Congressional members, and the probability of influence was found by normalizing the summed influence by the number of tweets issued by each Congressperson. This network may be of particular interest to the study of information diffusion within social networks.
+
+
+```{r}
+data = read.table("congress.edgelist", sep="", header=F,
+                  col.names=c("V1", "V2", "delete", "weight"))
+data = data[,-3]
+data$weight = gsub("}", '', data$weight)
+data$weight = as.numeric(data$weight)
+```
+
+```{r}
+data.attr = read.csv("gender-party.csv",sep=";", na.strings="")
+data.attr$Gender = factor(data.attr$Gender)
+data.attr$Party = factor(data.attr$Party)
+```
+
+```{r}
+g = igraph::graph_from_data_frame(data)
+# set vertex attributes
+g = set_vertex_attr(g, "name", value=data.attr$Name)
+g = set_vertex_attr(g, "gender", value=data.attr$Gender)
+g = set_vertex_attr(g, "affiliation", value=data.attr$Party)
+```
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+plot(g, vertex.size=10, vertex.label.cex=0.15, edge.labels=data$weight, edge.arrow.size=0.5)
+```
+
+The graph presents several challenges that impact our ability to draw clear conclusions. 
+While there are likely alternative visualization methods that could offer better clarity, we have not yet explored these approaches in class. 
+
+Firstly, the structure of the graph makes it difficult to discern communities due to overlapping edges and vertices. Observing the network, we could say that there are two main communities. These communities could correspond to people from the same political party, influencing each other more often whilst being in the same political party.
+
+Additionally, the graph is directed and weighted, suggesting that certain nodes exert more influence than others. Notably, the user 227 may be an influencer, since many arrows go from it to other users.
+
+Furthermore, the graph is connected since, despite there probably being two communities, they are not isolated due to the frequency of arguments between members of opposing political parties. The exact nature of this connectivity remains partially unknown. We suspect that if certain nodes were to be isolated or clustered together, it would be noticed in the plot. Since we cannot be sure as this is simply a visual study, further analysis is needed to confirm these patterns.
+
+Lastly, this network contains both single and double edges, as two people can interact mutually on Twitter, such as in the case of the influence relation between nodes 285 and 390. One interesting feature of such double edges is that the weight is not necessarily symmetric, that is, the influence might be higher in direction than in the other, due to the fact that one user might retweet or quote-retweet a different user more than they are retweeted or quote-retweeted by them, which could be exemplified by a member of lower rank retweeting the leader of their political party.
+
+# Assignment 2
+
+## Main characteristics of the network
+
+We can take a quick look at the `igraph` object, as well as visualize the graph with a basic plot:
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+plot(g, vertex.size=10, vertex.label.cex=0.3, edge.labels=data$weight, edge.arrow.size=0.5)
+```
+```{r}
+summary(g)
+```
+
+The graph's vertices are labeled with the name of the Congressperson that they represent. Besides said names, each vertex contains two attributes, representing person's gender and their political affiliation. The graph's edges contain the `weight` attribute, which represents the strength of the influence exerted by one Congressperson on another.
+
+we can modify the plot in order to better visualize the different attributes, starting with `gender`.
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+# Create a vector of colors based on gender
+gender_colors <- ifelse(V(g)$gender == "Male", "lightblue", "pink") 
+
+plot(g, vertex.color=gender_colors,
+     vertex.label=NA,
+     vertex.size=10, 
+     vertex.label.cex=0.25, 
+     edge.labels=data$weight, 
+     edge.arrow.size=0.5)
+
+legend('topleft', 
+       legend=levels(data.attr$Gender), 
+       pch=21,
+       pt.bg=c( "pink", "lightblue")
+       )
+```
+
+The same process can be repeated for `affiliation`.
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+# Create a vector of colors based on gender
+party_colors <- ifelse(V(g)$affiliation == "Republican","darkred",
+                       ifelse(V(g)$affiliation=="Democratic","darkblue","darkgreen"))
+
+plot(g, 
+     vertex.color = party_colors,
+     vertex.label=NA,
+     vertex.size=10, 
+     vertex.label.cex=0.25, 
+     edge.labels=data$weight,
+     edge.arrow.size=0.5)
+
+legend('topleft', 
+       legend=levels(data.attr$Party), 
+       pch=21,
+       pt.bg=c("blue", "darkgreen", "red")
+       )
+
+```
+
+Due to the definition itself of the network, it is expected to be directed and to lack both multiple edges and loops. Nonetheless, this can be checked computationally.
+
+Firstly, we simply check if it is directed.
+
+```{r}
+is_directed(g)
+```
+
+Secondly, the existence (or lack thereof) of loops can be verified:
+
+```{r}
+any_loop(g)
+```
+
+The final verification consists of checking whether the graph contains multiple edges. In a directed graph, this is defined as having several arrows pointing in the same direction, and so edges between the same vertices but in opposite directions do not count as such.
+
+```{r}
+any_multiple(g)
+```
+
+Since the graph does not contain loops nor multiple edges, we are dealing with a directed simple graph.
+
+As far as subnetworks are concerned, it might be interesting to study more in depth those induced by the different vertex attributes.
+We can start by visualizing the three distinct subnetworks induced by the political affiliation:
+
+```{r}
+republicans <- which(V(g)$affiliation=="Republican")
+g.rep <- induced_subgraph(g,republicans)
+
+democrats <- which(V(g)$affiliation=="Democratic")
+g.dem <- induced_subgraph(g,democrats)
+
+independents <- which(V(g)$affiliation=="Independent")
+g.ind <- induced_subgraph(g,independents)
+
+par(mar=c(0,0,0,0)+.3, mfrow=c(1,3))
+
+plot.igraph(g.rep,
+            vertex.label=NA,
+            vertex.size=10, 
+            vertex.label.cex=0.25,
+            main="Induced subgraph of Republicans",
+            vertex.color="darkred")
+
+plot.igraph(g.dem,
+            vertex.label=NA,
+            vertex.size=10, 
+            vertex.label.cex=0.25,
+            main="Induced subgraph of Democrats",
+            vertex.color="darkblue")
+
+plot.igraph(g.ind,
+            vertex.label=NA,
+            vertex.size=10, 
+            vertex.label.cex=0.25,
+            main="Induced subgraph of Independents",
+            vertex.color="darkgreen")
+```
+
+Perhaps, it could also be interesting to study the subnetworks induced by the gender of the Congresspeople, which take the following aspects:
+
+```{r}
+women <- which(V(g)$gender=="Female")
+g.w <- induced_subgraph(g,women)
+
+men <- which(V(g)$gender=="Male")
+g.m <- induced_subgraph(g,men)
+
+par(mar=c(0,0,0,0)+.3, mfrow=c(1,2))
+
+plot.igraph(g.w,
+            vertex.label=NA,
+            vertex.size=10, 
+            vertex.label.cex=0.25,
+            main="Induced subgraph of Women",
+            vertex.color="pink")
+
+plot.igraph(g.m,
+            vertex.label=NA,
+            vertex.size=10, 
+            vertex.label.cex=0.25,
+            main="Induced subgraph of Men",
+            vertex.color="lightblue")
+```
+
+## Order, size and subnetworks of interest
+
+The order and size of the main graph are:
+
+```{r}
+vcount(g)  # Number of vertices (order)
+ecount(g)  # Number of edges (size)
+```
+
+We can also compute these values for the distinct subnetworks mentioned in the previous section.
+
+Starting with the subnetworks induced by gender:
+
+```{r}
+print("Men's subnetwork")
+print(paste("Order:",vcount(g.m)))
+print(paste("Size:",ecount(g.m)))
+
+print("")
+
+print("Women's subnetwork")
+print(paste("Order:",vcount(g.w)))
+print(paste("Size:",ecount(g.w)))
+```
+
+The female politician's subnetwork contains only about 30% of the total number of nodes, indicating a notable gender inequality in the representation at the US Congress level. Furthermore, These Congresswomen interact with (and so are less influenced by, according to the metric in the study) one another much less than men do. It is also interesting to note that this indicates that there must be more than 5000 edges joining the two subnetworks, meaning that the influence an individual exerts, as well as the influences they receive, are not contained to those of their own gender.
+
+Now, moving onto the subnetworks induced by political affiliation, ignoring the subnetwork of independent politicians due to its simplicity:
+
+```{r}
+print("Republican's subnetwork")
+print(paste("Order:",vcount(g.rep)))
+print(paste("Size:",ecount(g.rep)))
+
+print("")
+
+print("Democrat's subnetwork")
+print(paste("Order:",vcount(g.dem)))
+print(paste("Size:",ecount(g.dem)))
+```
+
+As opposed to the previous case, these subnetworks seems much more balanced, having quite similar values for both order and size. In fact, the most interesting feature of these subnetworks is not found in what they contain, but rather in what the lack: the total edges contained in both of them account only for slightly less than half of the number of edges of the main network. This indicates that there is a very high level of interaction, and so of influence, between members of opposing political parties in the US Congress. 
+
+## Degree distribution(s)
+
+Now, the degree distribution of the graph and some subnetworks of interest will be studied.
+
+Starting with the degree distribution without taking into account the weights, we can begin by checking that the sum of all the vertices' degrees is equal to twice the size of the graph:
+
+
+```{r}
+sum(degree(g)) == 2*gsize(g) #2*size
+```
+
+Now, we can compute and visualize the total degree distribution of the network:
+
+```{r}
+# Calculate total degrees (sum of in-degree and out-degree for undirected graphs)
+degrees <- degree(g, mode = "total")
+
+# Plot degree distribution
+hist(degrees, breaks = 30, main = "Degree Distribution",
+     xlab = "Degree", ylab = "Frequency", freq=F, col="lightblue")
+lines(density(degrees),col="darkred", lwd=2.5)
+```
+
+We can now compute some important statistics of the total degree distribution.
+
+```{r}
+min(degrees)
+mean(degrees)
+median(degrees)
+max(degrees)
+```
+
+We can see both in the histogram and in the statistics that the distribution presents a strong right-skewness, with very few (although present) individuals influencing numerous Congresspeople and a peak at around 40.
+
+
+Now, we can compute the degree distribution taking into account the weights. In this case, a large weight implies a very close relationship between two members of the network, which is exactly what interests us.
+
+```{r, warning = FALSE}
+# Compute weighted degree manually by summing edge weights
+weighted_degree <- function(graph) {
+  degree_vector <- degree(graph, mode = "total", loops = FALSE)
+  weighted_degree_vector <- sapply(V(graph), function(v) sum(E(graph)[inc(v)]$weight))
+  return(weighted_degree_vector)
+}
+
+# Calculate weighted degree distribution
+weighted_degree_distribution <- weighted_degree(g)
+
+# Plot weighted degree distribution
+hist(weighted_degree_distribution, breaks = 20, main = "Degree Distribution (with weights)",
+     xlab = "Weighted Degree", ylab = "Frequency", freq=F, col="lightblue")
+lines(density(weighted_degree_distribution), lwd=2, col="darkred")
+```
+```{r}
+min(strength(g))
+median(strength(g))
+mean(strength(g))
+max(strength(g))
+```
+
+Once again, the distribution is very right-skewed, with very few extremely highly influential individuals.
+
+So far, only the total degree has been considered. However, since we are dealing with a directed network, the in and out degrees can also be considered separately.
+
+```{r}
+in_degree_distribution <- degree(g, mode = "in", loops = FALSE)
+out_degree_distribution <- degree(g, mode = "out", loops = FALSE)
+  
+par(mfrow=c(1,2))
+# Plot in-degree distribution
+hist(in_degree_distribution, breaks = 20, main = "In-Degree Distribution",
+       xlab = "In-Degree", ylab = "Frequency", col="lightblue", freq=F)
+lines(density(in_degree_distribution), lwd=2.5, col="darkred")
+  
+# Plot out-degree distribution
+hist(out_degree_distribution, breaks = 20, main = "Out-Degree Distribution",
+     xlab = "Out-Degree", ylab = "Frequency", col="lightblue", freq=F)
+lines(density(out_degree_distribution), lwd=2.5, col="darkred")
+```
+
+When comparing the in- and out- degree distributions, an interesting feature arises: the in-degree distribution is much more heavy-tailed than the out-degree distribution. This indicates that there are more politicians who are heavily-influenced than those who are big influencer, which make sense when taking account the hierarchical shape of most political parties, in which there are usually fewer highly ranked individuals and more lower ranked ones.
+
+## Weak and strong components
+
+A component of a graph is a subset of vertices and edges where every vertex is reachable from every other vertex within that subset, and no additional edges can be added without breaking this property of maximal connectivity. In a connected graph, there is only one component, encompassing all vertices, while in graphs with multiple components, each component represents a separate, maximally connected subgraph.
+
+We check whether the network is connected both strongly and weakly. 
+
+```{r}
+is_connected(g,mode="strong")
+is_connected(g,mode="weak")
+```
+
+It is only connected weakly. Then, the number of components is going to be 1 for the weakly connected network. For the strongly connected network, the number of components must be $>1$.
+
+```{r}
+length(components(g,mode="strong")$csize)
+```
+
+```{r}
+length(components(g,mode="weak")$csize)
+```
+
+Indeed, we have seven components for the strongly connected network and one for the weak one. 
+
+```{r}
+comp <- components(g, mode = "strong")
+comp$csize
+```
+
+Note that all the components except the last one have size 1. This means that we have 6 members that are not strongly connected to any other vertex, resulting in isolated vertices. After inspecting these 6 members, we don't see any particular common caharcteristic among them. 
+
+The strongly connected subgraph of our graph is plotted below. Note that this is going to look like the graph but with 6 less vertices. 
+
+```{r}
+subgraph_vertices <- V(g)[comp$membership == 7]
+subgraph <- induced_subgraph(g, subgraph_vertices)
+plot(subgraph,vertex.size=10, vertex.label.cex=0.3, edge.labels=data$weight, edge.arrow.size=0.5)
+```
+
+
+## Diameter of the network
+
+The diameter represents the maximum geodesic distance in the network, which is the shortest path length between two vertices. It's a critical metric for understanding the overall connectivity and reachability within the network, often used to assess the efficiency of communication or transportation systems modeled by graphs.
+
+Furthermore, the weighted geodesic distance can be defined as the path with the
+minimum sum of edge weights. It is also possible to compute the weighted diameter, defined the same way as the diameter but with weighted geodesic distnace instead. 
+
+We first compute the diameter without taking into account the weights. For that we create another network where the weights are the same for all edges. 
+
+```{r}
+g_unweight<-g
+
+E(g_unweight)$weight <- 1
+
+get_diameter(g_unweight, directed = TRUE)
+```
+```{r}
+diameter(g_unweight, directed = TRUE)
+```
+```{r}
+get_diameter(g_unweight, directed = FALSE)
+```
+```{r}
+diameter(g_unweight, directed = FALSE)
+```
+
+Observe that the diameter is smaller for the undirected network. This makes sensedue to the lack to direction of the edges. 
+
+```{r}
+names<-get_diameter(g_unweight,directed=TRUE)
+vertex_names <- list()
+
+for (i in 1:length(names)) {
+  vertex_names[[i]] <- names[[i]]$name
+}
+
+vertex_indices <- V(g_unweight)$name %in% vertex_names
+
+subgraph <- induced_subgraph(g_unweight, vertex_indices)
+
+plot(subgraph,main="Directed")
+
+```
+```{r}
+names<-get_diameter(g_unweight,directed=FALSE)
+vertex_names <- list()
+
+for (i in 1:length(names)) {
+  vertex_names[[i]] <- names[[i]]$name
+}
+
+vertex_indices <- V(g_unweight)$name %in% vertex_names
+
+subgraph <- induced_subgraph(g_unweight, vertex_indices)
+
+plot(subgraph, main="Undirected")
+
+```
+
+However, for our network, it is more interesting to obtain the weighted diameter. 
+
+
+We calculate and analyze the diameter of the network considering both directed and undirected networks. 
+
+```{r}
+get_diameter(g,directed=TRUE)
+```
+
+These are the names of the vertices that give the shortest path in the directed network, with Gregorio Kilili Camacho being the first vertex and Frederica Wilson being the fifth. 
+
+```{r}
+diameter(g,directed=TRUE)
+```
+
+```{r}
+farthest_vertices(g,directed=TRUE)
+```
+
+We identify the names of the pair of vertices that are the endpoints of the longest shortest path in the directed network.
+
+```{r}
+V(g)$affiliation[get_diameter(g,directed=TRUE)]
+V(g)$gender[get_diameter(g,directed=TRUE)]
+```
+
+We see that they are no necessarily from the same political party nor the same gender.
+
+```{r}
+names<-get_diameter(g,directed=TRUE)
+vertex_names <- list()
+
+for (i in 1:length(names)) {
+  vertex_names[[i]] <- names[[i]]$name
+}
+
+vertex_indices <- V(g)$name %in% vertex_names
+
+subgraph <- induced_subgraph(g, vertex_indices)
+
+plot(subgraph,main="directed")
+
+```
+
+See that the path is not the same when we are working with the weighted geodesic distance. Now, we do the same for an undirected network. 
+
+```{r}
+get_diameter(g,directed=FALSE)
+```
+
+```{r}
+diameter(g,directed=FALSE)
+```
+
+```{r}
+farthest_vertices(g,directed=FALSE)
+```
+
+```{r}
+V(g)$affiliation[get_diameter(g,directed=FALSE)]
+V(g)$gender[get_diameter(g,directed=FALSE)]
+```
+
+```{r}
+names<-get_diameter(g,directed=FALSE)
+vertex_names <- list()
+
+for (i in 1:length(names)) {
+  vertex_names[[i]] <- names[[i]]$name
+}
+
+vertex_indices <- V(g)$name %in% vertex_names
+
+subgraph <- induced_subgraph(g, vertex_indices)
+
+plot(subgraph,main="undirected")
+
+```
+
+We see that the diameter is larger for the strong case. We could have expected this due to the fact that the longest geodesic distance is larger for this case than for the weak case.
+
+## Adjacency matrix: a naïve measure of density
+
+In this last part, we wish to show the graph in a matrix form. For this purpose, we use the adjacency matrix, where intead of describing the graph with the edges, the adjacency matrix
+describes the relationships with ones and zeros.
+
+
+```{r}
+A = as_adjacency_matrix(g)
+print(A)
+```
+
+Our matrix is so big that is hard to interpret it. For this reason, we will be using a heatmap, so that we can have a better glimpse of what is happening with the edges. 
+
+```{r}
+heatmap(as.matrix(A), Rowv=NA, Colv=NA, labCol=NA, labRow=NA)
+```
+
+This matrix doesn't need to be symmetric, due to the fact that the network is directed. It looks like the number of edges is low, relative to all possible interactions between all vertices, suggesting a sparse graph.
+
+Weights can be taken into account when computing the adjacency matrix by replacing the elements in the adjacency matrix with the corresponding weights.
+
+```{r}
+heatmap(distances, Rowv=NA, Colv=NA, labCol=NA, labRow=NA)
+```
+
+We see that for some members, there are darker "vertical lines", which could suggest a bigger influence of the other members. Actually, it looks that there is a direct connection with the rest of the members or at least with most of them and also the weights of the edges is heavier. 
+
+# Assignment 3
+
+## Simple graph layouts
+
+We can start by plotting the network at hand using some standard graph layouts. As our network is not small, these are not expected to work particularly well. Nonetheless, they might still be able to shed some light or bring some insights on the less-obvious features of the infleucne relations between US Congresspeople.
+
+
+The circle and star layouts are a good starting point. Instead of using the default star layout, which places the first vertex in the middle, it has been modified to place the vertex of highest degree in the center in an attempt to achieve a clearer visualization.
+
+```{r}
+par(mar=c(0,0,0,0)+.3, mfrow=c(1,2))
+plot(g, layout=layout_in_circle, 
+     vertex.label.cex=0.3,
+     main="Circular layout")
+plot(g, layout=layout_as_star(g,center=V(g)[which(degree(g)==max(degree(g)))]),
+     vertex.label.cex=0.3,
+     main="Star layout")
+```
+
+As was already warned, these layouts do not work particularly well for this network due to its high order and size. Furthermore, they seem to indicate that this is an extremely dense network, which as we saw in previous week through the study of the adjacency matrix is not quite the case.
+
+Next, the standard tree layout can be considered. 
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+plot(g, layout=layout_as_tree,
+     vertex.label.cex=0.3,
+     edge.arrow.size=0.1,
+     main="Tree layout")
+```
+
+Once again, we find a layout that is overwhelmed by the sheer amount of vertices and interactions between them. Unlike in previous layotus however, the tree layout does provide insight into the network's communities, with perhaps four main communities connected by certain vertices, and even some rather isolated members of US Congress.
+
+Finally, we can give the grid and sphere layouts a try. 
+
+```{r}
+par(mar=c(0,0,0,0)+.3, mfrow=c(1,2))
+plot(g, layout=layout_on_grid,
+     vertex.label.cex=0.3,
+     main="Grid layout")
+plot(g, layout=layout_on_sphere,
+     vertex.label.cex=0.3,
+     main="Sphere layout")
+```
+
+These layouts do not seem to be good options for the visualization of the network either.
+
+All in all, simple graph layouts seem to lack the sophistication required to represent a network of this size in a clear manner, although the tree layout does allow for the gathering of some possible insights into its structure.
+
+## Graph layouts based on energy functions
+
+Some more sophisticated layouts are those obtained my maximizing energy functions. The optimization process that leads to these visualization attempts to distribute vertices away from each other, keep edges short and minimize edge crossings, all while trying to keep vertices from coming too close to edges.
+
+Each vertex's position is calculated and stored with a matrix that can be fed later to the `plot.igraph` function. The matrices for all the different energy functions that will be studied in this report are calculated below:
+
+```{r,cache=TRUE}
+dh = layout_with_dh(g)
+fr = layout_with_fr(g)
+gem = layout_with_gem(g)
+graphopt = layout_with_graphopt(g)
+kk = layout_with_kk(g)
+```
+
+We start by studying the Davidson-Harel layout, based on a simulated annealing algorithm. 
+
+```{r,cache=TRUE}
+par(mar=c(0,0,0,0)+.3)
+plot(g, layout=dh,
+     vertex.label.cex=0.2, vertex.size=10,
+     main="Davidson-Harel layout")
+```
+
+The Davidson-Harel layout seems to indicate the existence of two main communities, although not very well separated due to some vertices acting as links between them.
+
+The next energy function studied is that of the Fruchterman-Reingold layout, a force-directed algorithm which uses an analogy of physical springs as edges that attract connected vertices toward each other, while keeping a repulsive force attempting to separate all vertices from one another.
+
+```{r,cache=TRUE}
+par(mar=c(0,0,0,0)+.3)
+plot(g, layout=fr,
+     vertex.label.cex=0.3, vertex.size=10,
+     main="Fruchterman-Reingold layout")
+```
+
+This algorithm does not a yield a very clear visualization of the network.
+
+The next algorithm to be studied is the GEM force-directed layout, which just like before uses an analogy of attractice and repulsive forces between vertices taking into account the edges.
+
+
+```{r,cache=TRUE}
+par(mar=c(0,0,0,0)+.3)
+plot(g, layout=gem,
+     vertex.label.cex=0.2, vertex.size=10,
+     main="GEM force-directed layout")
+```
+
+Although once again not a very clear plot, this layout allows to perhaps identify those vertices that are either mostly influencers or mostly influenced, since they seems to sit in the outer regions of the network. Notice however that said vertices seems to have smaller degrees.
+
+To end, another force directed algorithm is used, the Graphopt layout algorithm, as well as a different approach, the Kamada-Kawai layout algorithm.
+
+```{r,cache=TRUE}
+par(mar=c(0,0,0,0)+.3, mfrow=c(1,2))
+plot(g, layout=graphopt,
+     vertex.label.cex=0.2, vertex.size=10,
+     main="Graphopt layout")
+plot(g, layout=kk,
+     vertex.label.cex=0.2, vertex.size=10,
+     main="Kamada-Kawai layout")
+```
+
+
+## Graph layout based on Multidimensional Scaling
+
+The next and final layout that will be studied is the one based on the statistical technique known as Multidimensional Scaling. The idea behind this is the projection of points from a higher dimensional space onto a plane, while trying to keep the distance between points as faithfully as possible.
+
+```{r,cache=TRUE}
+mds = layout_with_mds(g)
+```
+
+
+```{r,cache=TRUE}
+par(mar=c(0,0,0,0)+.3)
+plot(g, layout=mds,
+     vertex.label.cex=0.2, vertex.size=10,
+     main="Multidimensional Scaling layout")
+```
+
+In this layout we observe what could seem like two main communities which are not fully separated, as well as perhaps a third or even forth one. Furthermore, we also observe some vertices that interact less with the rest.
+
+## Best graph layout
+
+Since it has been able to represent together features that were observed separately in other layouts, Multidimensional Scaling (MDS) has been considered the best layout. Nonetheless, the standard MDS layout is not clear enough, as so we will now attempt to obtain a clearer visualization of our network by modifying features of the vertices and edges such as size, width or color, guided by the attributes of the network.
+
+We can start by adding colors to the plot. The color of the vertices will represent the Congressperson's political affiliation.
+
+```{r,cache=TRUE}
+plot(g, layout=mds,
+     vertex.label.cex=0.2, vertex.size=10,
+     edge.width=0.2,
+     edge.arrow.size=0.5, edge.arrow.width=0.5)
+```
+
+
+```{r,cache=TRUE}
+par(mar=c(0,0,0,0)+.3)
+
+V(g)[affiliation=="Republican"]$color = "red"
+V(g)[affiliation=="Democratic"]$color = "blue"
+V(g)[affiliation=="Independent"]$color = "green"
+
+plot(g, layout=mds,
+     vertex.label.cex=0.2, vertex.size=10)
+```
+
+Next, the size of the vertices can be modified according to their degree, so that more important Congresspeople are represented by bigger vertices.
+
+```{r,cache=TRUE}
+par(mar=c(0,0,0,0)+.3)
+V(g)$size = 1.5*log(degree(g))+5
+
+plot(g, layout=mds,
+     vertex.label.cex=0.2)
+```
+
+The edges of the network can also be modified, so that their width and size in general agrees with their weight attribute. Since the influence values are generally much smaller than 1 (default value for `edge.size`), the edge width in reality has been taking as their MinMax-scaled values. Unfortunately, this 
+
+```{r,cache=TRUE}
+par(mar=c(0,0,0,0)+.3)
+#(g)$width = (E(g)$weight - min(E(g)$weight)) / (max(E(g)$weight) - min(E(g)$weight))
+
+plot(g, layout=mds,
+     vertex.label.cex=0.2,
+     edge.arrow.size=0.5, edge.arrow.width=0.5)
+```
+
+Finally, color can also be added to the edges, so that they match the colors of the political affiliation whenever the edge in question joins two members of the same political party, and are grey otherwise. 
+
+```{r,cache=TRUE}
+par(mar=c(0,0,0,0)+.3)
+
+reps = V(g)[affiliation=="Republican"]
+dems = V(g)[affiliation=="Democratic"]
+inds = V(g)[affiliation=="Independent"]
+
+E(g)$color = "black"
+E(g)[reps %--% reps]$color = "darkred"
+E(g)[dems %--% dems]$color = "darkblue"
+E(g)[inds %--% inds]$color = "darkgreen"
+
+plot(g, layout=mds,
+     vertex.label.cex=0.2,
+     edge.arrow.size=0.5, edge.arrow.width=0.5)
+```
+
+However, even after attempting several combinations of colors, this last step does not seem to lead a clearer visualization. 
+
+```{r,cache=TRUE}
+g = delete_edge_attr(g,"color")
+```
+
+
+The best visualization of the network considered is the following one:
+
+```{r,cache=TRUE}
+par(mar=c(0,0,0,0)+.3)
+
+plot(g, layout=mds,
+     vertex.label.cex=0.2,
+     edge.arrow.size=0.5, edge.arrow.width=0.5)
+```
+
+## Power law distribution
+
+### Degrees and their distributions in the non-weighted graph
+
+We compute the order of the graph and the degree sequence of the network and the average degree of the network.
+
+
+```{r}
+gorder(g)
+head(degree(g),n=30)
+mean(degree(g))
+```
+
+Now, we can have a look at the degree sequence of the network. We also compute the average degree of the network that is approximately 56. Therefore, in average, each congressperson has around 56 connections with other congresspeople. If we have a look at the degree distribution of the network, we conclude that the distribution is positively skewed. Indeed, the average degree is low compared with some of the degrees that can be as high as 123. 
+
+```{r}
+table(degree(g))
+```
+
+We take a look at the degree distribution and we plot it to better visualize it.
+
+```{r}
+head(degree_distribution(g),n=20)
+```
+
+```{r}
+color_1 <- "deepskyblue2"
+par(mar=c(5,4,4,2)+0.1)
+plot(0:max(degree(g)),degree_distribution(g),col=color_1,
+     main="Degree distribution",
+     xlab="Degree",ylab="Frequency",type="h",lwd=1.5)
+points(0:max(degree(g)),degree_distribution(g),pch=20)
+```
+
+We can see that it is right-skewed. The average we computed `r mean(degree(g))` is very low compared to some values that are as high as 250 and more.
+
+We check that the network is sparse. For that we obtain the ratio between the size of the network and the maximum number of edges that might exist. Given $V$, the number of vertices, the maximum number of edges is 
+$$ \frac{V(V-1)}{2}$$
+```{r}
+ecount(g)
+vcount(g)*(vcount(g)-1)/2
+```
+
+```{r}
+ecount(g)/(vcount(g)*(vcount(g)-1)/2)
+```
+
+The ratio is given by $0.118$, meaning only that $11.8%$ of the potential edges already exist.
+
+Consequently, we plot the degree distribution in log scale, i.e., plot log of the degrees vs log of the probabilities (relative frequencies). Ideally, we would have a plot that shows a linear relationship between the log-frequency and the log-degree, so that we can fit a linear regression afterwards. 
+
+Note that, for plotting in log scale, it is necessary to plot only those log-degrees and log-probabilities corresponding to degrees and probabilities larger than 0. Therefore the first step is to locate such probabilities. Then, we can make the plot in log-scale. 
+
+```{r}
+degree_dis <- degree_distribution(g)
+max_degree <- max(degree(g))
+degree_dis_positive <- which(degree_dis!=0)
+```
+
+```{r}
+plot(degree_dis_positive-1,degree_dis[degree_dis_positive],log="xy",
+     col=color_1,main="Log-log degree distribution",
+     xlab="Log-Degree",ylab="Log-Frequency",pch=19)
+```
+
+As we can observe, we corrected right-skewness. However, this is clearly non-linear, makes no sense to fit a linear regression. Instead of using this degree distribution we will try with in-degree and out-degree distributions and check that a linear regression is more adequate in the latter distributions.
+
+```{r}
+in_degree_distribution <- degree(g, mode = "in", loops = FALSE)
+out_degree_distribution <- degree(g, mode = "out", loops = FALSE)
+```
+
+```{r}
+color_1 <- "deepskyblue2"
+par(mar=c(5,4,4,2)+0.1)
+plot(0:max(degree(g, mode="in")),degree_distribution(g, mode="in"),col=color_1,
+     main="In-Degree distribution",
+     xlab="Degree",ylab="Frequency",type="h",lwd=1.5)
+points(0:max(degree(g,mode="in")),degree_distribution(g,mode="in"),pch=20)
+```
+
+```{r}
+color_1 <- "deepskyblue2"
+par(mar=c(5,4,4,2)+0.1)
+plot(0:max(degree(g, mode="out")),degree_distribution(g, mode="out"),col=color_1,
+     main="Out-Degree distribution",
+     xlab="Degree",ylab="Frequency",type="h",lwd=1.5)
+points(0:max(degree(g,mode="out")),degree_distribution(g,mode="out"),pch=20)
+```
+
+Again both in-degree and out-degree distributions are right skewed, showing even more extreme skewness in the out-degree distribution.
+
+```{r}
+degree_dis_in <- degree_distribution(g,mode="in")
+max_degree_in <- max(degree(g,mode="in"))
+degree_dis_positive_in <- which(degree_dis_in!=0)
+```
+
+```{r}
+degree_dis_out <- degree_distribution(g,mode="out")
+max_degree_out <- max(degree(g,mode="out"))
+degree_dis_positive_out <- which(degree_dis_out!=0)
+```
+
+```{r}
+plot(degree_dis_positive_in-1,degree_dis_in[degree_dis_positive_in],log="xy",
+     col=color_1,main="Log-log IN-degree distribution",
+     xlab="Log-Degree",ylab="Log-Frequency",pch=19)
+```
+
+Once that we have corrected skewness, we can fit a power-law to the log-degree distribution. For that, we estimate a linear regression model by Weigthed Least Squares (WLS). For that, first, we estimate a linear regression by Ordinary Least Squares (OLS). 
+
+Note that the first two values could be considered as outliers, having a large effect in the fitting, so we eliminate them. 
+
+```{r}
+plot(degree_dis_positive_in[-c(1,2,3)] - 1, degree_dis_in[degree_dis_positive_in][-c(1,2,3)], log="xy",
+     col=color_1, main="Log-log IN-degree distribution",
+     xlab="Log-Degree", ylab="Log-Frequency", pch=19)
+```
+```{r}
+log_deg_dist_in <- log(degree_dis_in[degree_dis_positive_in])[c(-1,-2,-3)]
+log_deg_in <- log(degree_dis_positive_in-1)[c(-1,-2,-3)]
+first_fit_in <- lm(log_deg_dist_in~log_deg_in)
+summary(first_fit_in)
+```
+```{r}
+second_fit_in <- lm(log_deg_dist_in~log_deg_in,weights=1/first_fit_in$fitted.values^2)
+summary(second_fit_in)
+```
+
+The obtained fitting is $\widehat{\log(p_d)}=-1.50779-0.93294\log(d)$. The coefficient of determination is $R^2=0.6311$. Secondly, we estimate the variances of the errors and then carry out WLS that lead to the fitted model $\widehat{\log(p_d)}=-2.25816-0.72040\log(d)$ with coefficient of determination $R^2=0.5667$ (worse than before). The estimated slope $\hat{\alpha}=-0.72040$.
+indicating a moderate decrease, which appears to confirm that while most vertices have small degrees, a few vertices have larger degrees, although not extraordinarily large. Finally, we add the regression line to the plot.
+
+```{r}
+color_2 <- "indianred2"
+plot(log_deg_in,log_deg_dist_in,
+     col=color_1,main="Log-log in-degree distribution",
+     xlab="Log-Degree",ylab="Log-Frequency",pch=19)
+abline(first_fit_in$coefficients[1],first_fit_in$coefficients[2],col=color_2,lwd=2)
+```
+
+We now do the same for the out-degree distribution. 
+
+```{r}
+plot(degree_dis_positive_out-1,degree_dis_out[degree_dis_positive_out],log="xy",
+     col=color_1,main="Log-log OUT-degree distribution",
+     xlab="Log-Degree",ylab="Log-Frequency",pch=19)
+```
+
+```{r}
+plot(degree_dis_positive_out[-c(1,2)] - 1, degree_dis_out[degree_dis_positive_out][-c(1,2)], log="xy",
+     col=color_1, main="Log-log OUT-degree distribution",
+     xlab="Log-Degree", ylab="Log-Frequency", pch=19)
+```
+
+```{r}
+log_deg_dist_out <- log(degree_dis_out[degree_dis_positive_out])[c(-1,-2)]
+log_deg_out <- log(degree_dis_positive_out-1)[c(-1,-2)]
+first_fit_out <- lm(log_deg_dist_out~log_deg_out)
+summary(first_fit_out)
+```
+
+With ordinary least squares, we obtain a fitting $\widehat{\log p_d}=-1.8099+-0.8266\log(d)$ for the out-degree distribution. The coefficient of determination is $R^2=0.4054$. This is not a very good result, but in light of the non-linearity of our data, it was something we could expect. 
+
+```{r}
+second_fit_out <- lm(log_deg_dist_out~log_deg_out,weights=1/first_fit_out$fitted.values^2)
+summary(second_fit_out)
+```
+
+Weighted least squares gives us the fit $\widehat{\log p_d}=-2.8091-0.5371\log(d)$. The coefficient of determination is even worse, $R^2=0.2336$. The estimated slope is $\hat{\alpha}=-0.5371$, which again is a sensible result due to the sparse nature of the network.  
+
+We fit the regression line to the plot.
+
+```{r}
+color_2 <- "indianred2"
+plot(log_deg_out,log_deg_dist_out,
+     col=color_1,main="Log-log out-degree distribution",
+     xlab="Log-Degree",ylab="Log-Frequency",pch=19)
+abline(first_fit_out$coefficients[1],first_fit_out$coefficients[2],col=color_2,lwd=2)
+```
+
+### Degrees and their distributions in the weighted graph
+
+We now do this again, but taking into account the weights in the edges of our graph. Firstly, we compute the weighted degree sequence of the network, as well as the average weighted degree of the network. The strength of a vertex in a graph is defined as the sum of weights of its incident edges.
+
+```{r}
+head(strength(g))
+```
+
+```{r}
+mean(strength(g))
+```
+
+The average weighted degree of the network is 0.3252, which indicates that on average, a congressperson has around 0.32 weighted influence via twitter on the rest of the congresspeople.
+
+```{r}
+head(table(strength(g)), n = 20)
+```
+
+In particular, the weighted degree distribution of our network is positively skewed. Indeed, the average weighted degree (`r mean(strength(g))`) is low compared with some of the weighted degrees that can be as high as `r max(strength(g))`.
+
+To compute the weighted degree distribution, we have to write a function we used in class called `graph.strength.distribution` to do it because igraph does not have a function to compute such distribution.
+
+```{r}
+graph.strength.distribution <- function (graph, cumulative = FALSE, ...)
+{
+  if (!is_igraph(graph)) {
+    stop("Not a graph object")
+  }
+  cs <- strength(graph, ...)
+  breaks <- seq(min(cs), max(cs), length.out = length(cs) + 1)
+  hi <- hist(cs, breaks = breaks ,plot=FALSE)$density
+  if (!cumulative) {
+    res <- hi
+  }
+  else {
+    res <- rev(cumsum(rev(hi)))
+  }
+  res
+}
+```
+
+The function begins by validating the input to ensure it's a valid `igraph` object. If the input isn't valid, the function stops with an error message.
+
+Next, the function calculates the strength of each vertex in the graph and stores it in a variable called `cs`. It then computes the density of the strength values by creating a histogram without plotting it. The breaks for the histogram are determined based on the minimum and maximum strength values in `cs`.
+
+Depending on the `cumulative` argument, the function either returns the computed density values directly or calculates the cumulative distribution of the strength values using the `cumsum` function. If `cumulative` is set to `TRUE`, the function reverses the order of the density values before calculating the cumulative sum to ensure the correct cumulative distribution is obtained.
+
+Finally, the function returns the computed result, which is either the density values or the cumulative distribution of the strength values, based on the `cumulative` argument.
+
+We use it in our weighted graph.
+
+```{r}
+weighted_degree_dis <- graph.strength.distribution(g) 
+head(weighted_degree_dis, n = 50)
+```
+ 
+We obtain and store the maximum degree to use it later in the plotting of the distribution. 
+
+```{r}
+max_weighted_degree <- max(strength(g))
+max_weighted_degree
+```
+
+Now we can obtain our plot.
+
+```{r}
+par(mar=c(5,4,4,2)+0.1)
+plot(seq(0, max_weighted_degree, length.out = length(weighted_degree_dis)), weighted_degree_dis,col=color_1,
+     main="Weighted degree distribution of US Congress Network",
+     xlab="Weighted degree",ylab="Frequency",type="h",lwd=1.5)
+points(seq(0, max_weighted_degree, length.out = length(weighted_degree_dis)), weighted_degree_dis, pch=20)
+```
+
+We can see that it is right-skewed. Consequently, we plot the weighted degree distribution in log scale, i.e., plot log of the weighted degrees vs log of the probabilities (relative frequencies). As before, we plot only those log-weighted-degrees and log-probabilities corresponding to weighted degrees and probabilities larger than 0, which we obtain previously.
+
+```{r}
+weighted_degree_dis_positive <- which(weighted_degree_dis!=0)
+weighted_degree_dis_positive
+```
+
+```{r}
+plot(weighted_degree_dis_positive,
+     weighted_degree_dis[weighted_degree_dis_positive],
+     log="xy",col=color_1,main="Log-log weighted degree distribution of US Congress Network",
+     xlab="Log-Weighted-Degree",ylab="Log-Frequency",pch=19,lwd=1.5)
+```
+
+The result is that we can see several vertices are of low degree, while another set of vertices are of higher degree. Therefore, the differences are not so large as in the unweighted case and do not follow a linear model either. We separate in the in-degree and out-degree distributions.
+
+```{r}
+in_degree_weighted_dis <- graph.strength.distribution(g, mode = "in")
+out_degree_weighted_dis <- graph.strength.distribution(g, mode = "out")
+```
+
+```{r}
+par(mar=c(5,4,4,2)+0.1)
+plot(seq(0, max(in_degree_weighted_dis), length.out = length(in_degree_weighted_dis)), degree(g, mode = "in"), col=color_1,
+     main="In-degree distribution of US Congress Network",
+     xlab="In-degree", ylab="Frequency", type="h", lwd=1.5)
+points(seq(0, max(in_degree_weighted_dis), length.out = length(in_degree_weighted_dis)), degree(g, mode = "in"), pch=20)
+```
+
+```{r}
+par(mar=c(5,4,4,2)+0.1)
+plot(seq(0, max(out_degree_weighted_dis), length.out = length(out_degree_weighted_dis)), degree(g, mode = "out"), col=color_1,
+     main="Out-degree distribution of US Congress Network",
+     xlab="Out-degree", ylab="Frequency", type="h", lwd=1.5)
+points(seq(0, max(out_degree_weighted_dis), length.out = length(out_degree_weighted_dis)), degree(g, mode = "out"), pch=20)
+```
+
+We can see that neither are skewed. Consequently, we plot the weighted degree distribution in log scale, i.e., plot log of the weighted degrees vs log of the probabilities (relative frequencies). As before, we plot only those log-weighted-degrees and log-probabilities corresponding to weighted degrees and probabilities larger than 0, in this case, for both in and our edges.
+
+```{r}
+weighted_degree_dis_positive_in <- which(in_degree_weighted_dis!=0)
+weighted_degree_dis_positive_in
+```
+
+```{r}
+weighted_degree_dis_positive_out <- which(out_degree_weighted_dis!=0)
+weighted_degree_dis_positive_out
+```
+
+```{r}
+plot(weighted_degree_dis_positive_in,
+     in_degree_weighted_dis[weighted_degree_dis_positive_in],
+     log="xy",col=color_1,main="Log-log in-weighted degree distribution of US Congress Network",
+     xlab="Log-in-Weighted-Degree",ylab="Log-Frequency",pch=19,lwd=1.5)
+```
+
+We eliminate the first four observations to improve linearity.
+
+```{r}
+plot(weighted_degree_dis_positive_in[-c(1,2,3,4)],
+     in_degree_weighted_dis[weighted_degree_dis_positive_in][-c(1,2,3,4)],
+     log="xy",col=color_1,main="Log-log in-weighted degree distribution of US Congress Network",
+     xlab="Log-in-Weighted-Degree",ylab="Log-Frequency",pch=19,lwd=1.5)
+```
+
+
+
+```{r}
+plot(weighted_degree_dis_positive_out,
+     out_degree_weighted_dis[weighted_degree_dis_positive_out],
+     log="xy",col=color_1,main="Log-log out-weighted degree distribution of US Congress Network",
+     xlab="Log-out-Weighted-Degree",ylab="Log-Frequency",pch=19,lwd=1.5)
+```
+
+We fit the linear regressions.
+
+```{r}
+log_weighted_deg_dist_in <- log(in_degree_weighted_dis[weighted_degree_dis_positive_in])[-c(1,2,3,4)]
+log_weighted_deg_in <- log(weighted_degree_dis_positive_in)[-c(1,2,3,4)]
+first_fit_w_in <- lm(log_weighted_deg_dist_in~log_weighted_deg_in)
+summary(first_fit_w_in)
+```
+
+```{r}
+plot(log_weighted_deg_in,log_weighted_deg_dist_in,
+     col=color_1,main="Log-log in-weighted degree distribution of US Congress network",
+     xlab="First Log-in-Weighted-Degree",ylab="Log-Frequency",pch=19)
+abline(first_fit_w_in$coefficients[1],first_fit_w_in$coefficients[2],col=color_2,lwd=2)
+```
+
+```{r}
+log_weighted_deg_dist_out <- log(out_degree_weighted_dis[weighted_degree_dis_positive_out])
+log_weighted_deg_out <- log(weighted_degree_dis_positive_out)
+first_fit_w_out <- lm(log_weighted_deg_dist_out~log_weighted_deg_out)
+summary(first_fit_w_out)
+```
+
+```{r}
+second_fit_out <- lm(log_weighted_deg_dist_out~log_weighted_deg_out,weights=1/first_fit_w_out$fitted.values^2)
+summary(second_fit_out)
+```
+
+
+```{r}
+plot(log_weighted_deg_out,log_weighted_deg_dist_out,
+     col=color_1,main="Log-log out-weighted degree distribution of US Congress network",
+     xlab="Log-out-Weighted-Degree",ylab="Log-Frequency",pch=19)
+abline(first_fit_w_out$coefficients[1],first_fit_w_out$coefficients[2],col=color_2,lwd=2)
+```
+
+### Conclusions
+
+The in-degree distribution of our graph provides valuable insights into its structure, especially when considering weighted edges. Our weighted in-degree distribution captures the importance or significance of nodes based on the sum of weights of incoming edges, providing a nuanced understanding of node centrality in the network.
+
+On the other hand, the out-degree distribution's behavior with weighted edges is different. The linear regression for the out-degree distribution does not fit the data as well when considering weights. This discrepancy could arise due to various reasons. For instance, the weights might introduce noise or the way weights are assigned could influence the distribution differently than simple counts of outgoing edges.
+
+In summary, while our weighted in-degree distribution offers a richer understanding of a network's structure, the linear regression of our weighted out-degree distribution does not provide a better fit compared to its unweighted counterparts. This highlights the importance of carefully considering the nature and implications of edge weights when analyzing graph structures.
+
+# Assignment 4
+
+## Vertex centrality measures
+
+There exist plenty of different measures of vertex centrality in networks. We will study our netowrk through some of the simplest or most famous ones: vertex degree, closeness, betweenness, eigenvector and PageRank.
+
+### Vertex degree
+
+We will start by applying the simplest centrality measure: vertex degree. Since we are dealing with a weighted directed network, all possible computations of the vertex degree will be taken into account.
+
+We can start by computing the total vertex degree:
+
+```{r}
+total_deg = sort.int(degree(g), decreasing=T, index.return=T)
+total_deg$x[1:5]
+```
+
+According to this measure, Mike Gallagher is the most central vertex, followed by Steve Cohen and Mike Bost. Centrality in this case does not necessarily represent the most influential nor influenced individuals, but rather those that might influence and/or be influenced by the most people. To get a better idea of the extent of the influence the weighted vertex degree should be calculated:
+
+```{r}
+total_weighted = sort(strength(g), decreasing=T, index.return=T)
+total_weighted$x[1:5]
+```
+
+We obtain a similar scenario, in which Mike Gallagher is the vertex with more outgoing/ingoing influence and Maria Elvira Salazar also appears in the podium, although some other new Congresspeople appear when taking into account the weights. These new people are influenced or influence less people but in a stronger manner.
+
+To really be able to tell whether these people are influencers or followers, or even a mix of both, the in- and out- degrees need to be calculated. We can start with the in-degrees:
+
+```{r}
+in_deg = sort.int(degree(g, mode="in"), decreasing=T, index.return=T)
+in_deg$x[1:5]
+```
+
+Mike Gallagher and Maria Elvira Salazar appear once again, with the latter being even higher than before. Another well-known name that appears in the top 5 is that of Bernie Sanders. These central vertices (in terms of their in-degree) represent people that are influenced by a lot of different politicians in the US Congress. To make a better judgement, however, the weights have to be included in the computation:
+
+```{r}
+in_weighted = sort(strength(g, mode="in"), decreasing=T, index.return=T)
+in_weighted$x[1:5]
+```
+
+Mike Gallagher stays at the top as the most influenced individual in US Congress. Some new names appear, only one of which (Morgan Griffith) appears at the top of the total weighted degrees. Bernie Sanders disappears from the top 5 (now being 9th), which indicates that he is influenced by a lot of people but not very strongly.
+
+This process can be repeated for the out-degree to be able to discern the biggest influencers:
+
+```{r}
+out_deg = sort.int(degree(g, mode="out"), decreasing=T, index.return=T)
+out_deg$x[1:5]
+```
+
+Mike Gallagher also appears as a person that influences many others, although just behind the first spot taken by Steve Cohen, who did not seem to be too influenced earlier. 
+
+```{r}
+out_weighted = sort(strength(g, mode="out"), decreasing=T, index.return=T)
+out_weighted$x[1:5]
+```
+
+When taking into account the weights we see Steve Cohen stays on top, followed by Tom Rice and Mike Bost. All three of them appeared when considering the total weighted degree but were not present in the weighted in-degree, which indicates that they are influencers without being followers too, unlike Mike Gallagher.
+
+### Closeness centrality
+
+The next centrality measure studied is that of closeness centrality, which deals with the distances of vertices to one another. It is important to take into account that, as we saw in previous weeks, ours is a directed network with seven (strong) components. Since 6 out of the 7 components contain only one vertex each, the closeness centrality will be calculated only for the largest component.    
+
+```{r}
+components_g = components(g, mode="strong")
+g_large = induced_subgraph(g, 
+                           components_g$membership==which.max(components_g$csize))
+closeness_g = sort(closeness(g_large, normalized=TRUE, mode="out", weights=rep(1,ecount(g_large))),
+                             decreasing=TRUE, index.return=TRUE)
+closeness_g$x[1:5]
+```
+
+Once again, we see some familiar names such as Steve Cohen, Mike Gallagher, or Mike Bost. The high closeness centrality of these Congresspeople indicates that, apart from influencing many people, they are the ones whose influence takes less intermediaries to reach those who are not directly influenced by them. As usual, however, weights should be taken into account before making any claim on the extent of influences of these people.
+
+In order to include weights in the computation, it is important realize that in this network bigger weights indicate higher influence, and so a closer relationship between two Congresspeople. Therefore, when computing distances between vertices, they must be inversely proportional to the weights.
+
+```{r}
+weighted_closeness = sort.int(closeness(g_large, normalized=T, mode="out",
+                                        weights=1/E(g_large)$weight),
+                             decreasing=TRUE, index.return=TRUE)
+weighted_closeness$x[1:10]
+```
+
+For the first five people, we obtain vastly different results to the ones seen up until this point, although when considering the first ten people instead, Mike Bost and Tom Rice appear once again. As opposed to standard closeness, weighted closeness is influenced by both the amount of intermediaries and how strong those intermediaries both influence and are influenced, that is, the individuals ranking at the top of weighted closeness are the ones that, although perhaps seeming unimportant at first, are able to truly influence other people the fastest, even if not directly due to their low vertex degree.
+
+
+### Betweenness centrality
+
+Next, betweenness centrality can be considered. This centrality measure assigns higher centrality to those vertices which are necessary to cross through in order to reach others, that is, intermediaries through which the influence must go in order to further spread.
+
+```{r}
+betweenness_g = sort(betweenness(g, normalized=T, directed=T, weights=rep(1,ecount(g))),
+                     decreasing=T, index.return=T)
+betweenness_g$x[1:5]
+```
+
+Once again, the same three names are repeated, together with two new ones.
+
+Taking into account the weights of the network just as we did before:
+
+
+```{r}
+weighted_betweenness = sort(betweenness(g, normalized=T, directed=T, weights=1/E(g)$weight),
+                     decreasing=T, index.return=T)
+weighted_betweenness$x[1:5]
+```
+
+We see some already seen names, among which Mike Gallagher is far ahead of all others in terms of centrality. These individuals are the ones that, when taking influence into account, serve as gateways from whom one's influence can reach others the fastest.
+
+
+### Eigenvector centrality
+
+The next centrality measure studied is that of eigenvector centrality, which is related to the "status" of a vertex within a network.
+
+First, we consider standard eigenvector centrality:
+
+```{r, warning=F}
+eigen_g = sort(eigen_centrality(g, directed=T, scale=F, weights=rep(1,ecount(g)))$vector,
+               decreasing=T, index.return=T)
+eigen_g$x[1:5]
+```
+
+Once again, Mike Gallagher comes out on top, which indicates that he is an influencer within the US Congress network who at the same time influences a lot of other influencers.
+We can repeat the computation taking the weights of the network into account:
+
+```{r, warning=FALSE}
+weighted_eigen = sort(eigen_centrality(g, directed=T, scale=F, weights=E(g)$weight)$vector,
+               decreasing=T, index.return=T)
+weighted_eigen$x[1:5]
+```
+
+When taking into account the weights, the ranking changes all except the first position, which is still held by Mike Gallagher. This but confirms his status as the individual who influences the most influencers.
+
+
+### PageRank centrality
+
+Finally, the last vertex centrality measure computed will be PageRank centrality, which is similar to eigenvector centrality.
+
+```{r}
+pagerank_g = sort(page_rank(g, weights=rep(1,ecount(g)))$vector,
+            decreasing=T, index.return=T)
+pagerank_g$x[1:5]
+```
+
+```{r}
+weighted_pagerank = sort(page_rank(g, weights=E(g)$weight)$vector,
+            decreasing=T, index.return=T)
+weighted_pagerank$x[1:5]
+```
+
+Once again, we see Mike Gallagher come out on top of both standard and weighted PageRank centrality rankings, confirming his status of big influencer within the US Congress network.
+
+## Edges centrality measures
+
+In this section, we are going to focus on computing edge centrality. Unfortunately, most of the centrality measures for vertices cannot be easily extended to measure the centrality of edges. Therefore, we focus on the betweenness centrality that has a straightforward extension to the case of edges. For that, we use the function called `edge_betweenness` of the `igraph` library to obtain the betweenness centrality of the edges of our USA Congresspeople graph.
+
+The betweenness centrality is a widely used measure for identifying central edges in a network. It quantifies the importance of an edge based on how often it lies on the shortest paths between pairs of nodes in the network. Edges with high betweenness centrality play a crucial role in maintaining efficient communication and connectivity within the network.
+
+We first compute it without weights, but taking into account its directed nature. The betweenness centrality essentially measures how often an edge acts as a bridge or intermediary between different nodes. Edges with high betweenness centrality are crucial for maintaining efficient communication and connectivity within the network and the ones with the lowest are disposable.
+
+In directed networks, betweenness centrality for an edge considers the directed nature of relationships between nodes. This means that the edge's directionality influences its contribution to the network's overall betweenness centrality.
+
+```{r}
+edge_centrality <- sort.int(edge_betweenness(g, weights=rep(1,ecount(g)), directed = TRUE),
+                        decreasing=TRUE,index.return=TRUE)
+edge_centrality$x[1:30]
+```
+
+We have computed the values of the betweenness centrality measure for all of our 13289 edges. We wanna see the ones with the highest values, in other words, the most influential edges in maintaining efficient connectivity in our graph.
+
+```{r}
+E(g)[edge_centrality$ix][1:10]
+```
+
+These are the most crucial connections if we only take into account which congresspeople interact. As we saw in the vertices centrality measures Mike Gallagher is a very central player in the graph. Its influenced and influences strongly other people, so it does not come as a surprise when we see it in our most crucial edges as both the begin and the end of edges.
+
+High-betweenness edges are  essential for the connectivity of the graph. If these critical edges were to be eliminated from the network, it's highly likely that the paths between pairs of vertices would be severely impacted.
+
+If we were to remove these crucial edges, it could disrupt the efficient communication and connectivity within the network. This disruption may lead to an increase in the distance between pairs of vertices, potentially making it more challenging for influence to flow between different parts of the network. Moreover, the removal of these critical edges could result in the network becoming fragmented, meaning that certain pairs of vertices may no longer have a path connecting them.
+
+We now compute this measure with weights.
+
+```{r}
+edge_cent_weight <- sort.int(edge_betweenness(g, weights = 1/E(g)$weight, directed = TRUE),
+                             decreasing = TRUE, index.return = TRUE)
+edge_cent_weight$x[1:30]
+```
+
+The difference in the output between the two code chunks reflects the impact of considering edge weights on the calculation of edge betweenness centrality.
+
+When not taking onto account the weights, the resulting edge betweenness centrality scores are generally lower. This is because each edge is treated equally in terms of its influence on the shortest paths between pairs of nodes. Consequently, the computed centrality scores tend to be lower.
+
+On the other hand, when taking into account the weights of our graph, the resulting edge betweenness centrality scores are significantly higher. This is because the edge weights provide additional information about the importance of connections between the congresspeople. As a result, edges with higher weights contribute more to the calculation of betweenness centrality, leading to higher centrality scores.
+
+Since the values are different, it is adequate to think that the congresspeople connected are different too.
+
+```{r}
+E(g)[edge_cent_weight$ix][1:10]
+```
+
+These connections are the most crucial when we consider, not only the existing interactions, but also the repetition of each one. These are in fact different edges from before. When taking into account the weights, the crucial edges for graph connectivity are different ones.
+
+If we take a closer look at the congressperson Mike Gallagher, he has crucial edges in both settings. In the weightless graph, Mike Gallagher -> Mike Braun and Mike Gallagher-> Chris Coon; while in the weighted one, Mike Gallagher -> Nicole Malliotakis. We have seen that Mike Gallagher is crucial in the connectivity of both of our graphs, weighted and unweighted.
+
+## Local density
+
+### Cliques
+
+Cliques are fundamental concepts in graph theory that represent fully connected subgraphs within a larger network. A clique is a subset of vertices in a graph where every pair of vertices is directly connected by an edge. In other words, in a clique, every vertex is adjacent to every other vertex within the subset.
+
+Cliques are valuable in network analysis for various reasons since they provide insights into the structure and organization of networks by revealing cohesive subgroups or communities of nodes. Moreover, they can be used for tasks such as community detection, network visualization, and understanding social or communication patterns within networks. Furthermore, analyzing cliques can help identify influential nodes or groups of nodes that have strong connections with each other, indicating potential hubs of activity or influence within the network.
+
+In this section, we aim to compute the set of cliques for our Congress network. However, since the calculation of cliques is typically performed on undirected networks, we need to create an undirected version of our graph first.
+
+To achieve this, we'll make a copy of our original graph but convert it into an undirected graph. This process ensures that each directed edge in our original graph becomes an undirected edge in the new graph, allowing us to analyze cliques effectively.
+
+By performing these steps, we'll be able to analyze the cliques within our Congress network effectively, gaining insights into cohesive subgroups or communities within the network of Congressional interactions.
+
+```{r}
+## Convert the directed graph to an undirected one
+g_un <- as.undirected(g, mode = "collapse")
+```
+
+```{r}
+## Compute the set of cliques for the undirected graph
+cliques <- cliques(g_un)
+length(cliques)
+```
+
+We can see that we have an enormous amount of cliques within our undirected graph. Let's see how many we have of each size.
+
+```{r}
+table(sapply(cliques,length))
+```
+
+We have, of course, $475$ cliques of size $1$, which correspond to our number of vertices. Moving on, we observe $10222$ cliques of size $2$. These cliques represent pairs of congresspeople who have established direct connections with each other. It's noteworthy that the number of cliques of size $2$ is not equal to the number of edges in our directed graph, which was $13289$. This discrepancy arises because, in the process of making our graph undirected, some edges were collapsed. Specifically, instances where pairs of congresspeople had reciprocal edges (one edge in each direction) were merged into a single undirected edge.
+
+Moreover, we can see that we have $52333$ triangles (cliques of size $3$), $136659$ cliques of size $4$ and so on. Now, we are interested to see which vertices correspond to the $6$ cliques of size $13$ that we have.
+
+```{r}
+largest_cliques(g_un)
+```
+
+We can see that congressman Debbie Stabenow appears in several cliques, including those with Tony Cárdenas, Kat Cammack, Chuck Schumer, and others. These cliques indicate cohesive subgroups where members frequently interact or collaborate on legislative matters. Moreover, we can see an overlap in the cliques, congresswoman Kat Cammack is a member of cliques that also include Chuck Schumer, Debbie Stabenow, and Tony Cárdenas. This overlap suggests that Kat Cammack serves as a bridge between different cohesive subgroups within the network, facilitating communication and collaboration between them.
+
+Furthermore, we can see a variety of congresspeople involves. For example, congressman John Larson, representing Connecticut's 1st congressional district, appears in cliques alongside representatives from diverse regions and political parties, such as Kat Cammack from Florida, Debbie Stabenow from Michigan, and Chuck Schumer from New York. This diversity reflects the broad range of interactions and collaborations within the Congress network.
+
+In addition,  we observe some potential for bipartisanship, since senator Chuck Schumer, a Democrat from New York, is present in cliques that include both Democratic and Republican members, such as Debbie Stabenow, a Democrat, and Kat Cammack, a Republican. This indicates opportunities for bipartisanship and collaboration across party lines on legislative initiatives.
+
+Finally, we can identify some key figures, because senator Chuck Schumer appears in multiple large cliques, including those with Debbie Stabenow, Kat Cammack, and others. His presence in these cliques suggests that he plays a central role in facilitating connections and interactions within the network, potentially influencing the flow of information and collaboration among members.
+
+We have taken a look at the cliques of the largest order, but what about the other cliques? Are they maximal or are they just subgraphs from the $13$ largest cliques? To investigate this we are going to compute the maximal cliques of our graph.
+
+```{r, warning = FALSE}
+max_cliques <- max_cliques(g)
+head(max_cliques, n = 30)
+```
+
+We can see that we have many small cliques, several cliques consist of only two congresspeople, such as Frederica Wilson and John Sarbanes, or Frederica Wilson and Frank Lucas. These smaller cliques may represent pairs of congresspeople who share common interests or frequently collaborate on specific issues. Moreover, there is some overlap between cliques, where certain congresspeople appear in multiple cliques. For example, John Yarmuth appears in cliques with different congresspeople, including Dina Titus, Chris Stewart, and Dan Bishop. This overlap suggests that John Yarmuth plays a bridging role between different cohesive subgroups within the network.
+
+Moreover, the variety of the background of the present people in a graph remains presenting a diverse range of backgrounds, political affiliations, and regions. For instance, Joe Wilson interacts with Diana Harshbarger and Carlos Giménez in one clique and with Marco Rubio and Bill Johnson in another. This diversity reflects the broad spectrum of interactions and collaborations within the Congress network. Once again, we have members of different political parties (Democrat and Republican) collaborating. For example, Steve Womack interacts with both Marc Veasey and Patrick McHenry, suggesting opportunities for cooperation on legislative matters despite differing party affiliations.
+
+A key figure that we can identify from these cliques is, for example, Donald Norcross, who is involved in several cliques with different combinations of congresspeople, indicating his central role in the network.
+
+However, we have not seen what happened with those cliques of a higher order. For that we compute the following table:
+
+```{r}
+table(sapply(max_cliques,length))
+```
+
+We can see that none of the cliques of order $1$ are maximal cliques. Moreover, only $94$ out of the $10222$ cliques of degree $2$ are maximal cliques. Furthermore, out of the $52333$ cliques of order $3$, $1041$ are maximal. In general, the number of maximal cliques out of the total number of cliques at one degree is much smaller, except with degree $13$, where all are maximal cliques.
+
+### Graph coreness
+
+Graph coreness is a measure used in graph theory to quantify the structural centrality of nodes within a graph. It indicates how "deep" a node is within the core structure of the graph.
+
+The coreness of a node is determined by recursively peeling away its neighbors and itself until it can no longer be removed without reducing the degree of its neighbors below a certain threshold. The highest coreness value in the graph is the coreness of the most central node.
+
+Nodes with higher coreness values are considered more central to the overall structure of the graph, as they have more connections to other nodes that are also well-connected. Coreness is often used in network analysis to identify important nodes or to understand the robustness and resilience of a network.
+
+```{r, warning = FALSE}
+cores <- sort(coreness(g), decreasing = TRUE)
+cores[1:10]
+table(cores)
+```
+
+We can see that, the top $10$ nodes identified, including "Bill Cassidy," "Chris Coons," "Catherine Cortez Masto," "Tom Cotton," "Kevin Cramer," "Josh Hawley," "Martin Heinrich," "John Hickenlooper," "Mazie Hirono," and "John Hoeven," all possess the maximum coreness value of $35$. This collective maximum suggests a highly central position within the network, implying strong connections to other nodes.
+
+Furthermore, the concentration of vertices with the highest coreness value of $35$ stands out prominently, encompassing $175$ out of $475$ vertices. This concentration underscores the existence of a core group of highly connected nodes, implying significant roles in information dissemination or influence propagation within the network.
+
+As coreness values gradually decrease from the maximum value of 35 to lower values, we witness a diminishing count of vertices associated with each successive coreness level. Such a gradual decline in coreness values is characteristic of many networks, reflecting a diminishing level of centrality or influence as we move away from the most central nodes.
+
+We can take a look at the vertices (congresspeople), which have the highest coreness value.
+
+```{r}
+which(cores==max(cores))
+```
+
+We delve further into the analysis of the coreness values of our network by plotting them in a histogram to have a visual representation and see if we can draw new insights.
+
+```{r}
+hist(cores,col='skyblue',
+     main="Histogram for the k-cores in the Congresspeople network")
+```
+
+Firstly, we can see that the scarcity of vertices with low coreness values suggests that there are relatively few peripheral nodes with low connectivity or influence in the network. Instead, a large proportion of nodes appear to be rightly positioned, with higher coreness values indicating greater centrality and connectivity as we know.
+
+Moreover, the sharp increase in the number of vertices with coreness values in the range of 30-35 indicates the formation of a core group of highly central nodes (the one we have been guessing). These nodes likely represent key influencers within the congresspeople network. The concentration of vertices with high coreness values suggests a cohesive network structure characterized by dense connections and strong interdependencies among nodes. This cohesion fosters efficient communication and facilitates the spread of information or influence across the network.
+
+Finally, we generate the subgraph of our original graph containing only the vertices with the maximum coreness value (the highly central nodes), and then we extract the unique edges from that subgraph and display some of them.
+
+```{r}
+subgraph <- induced_subgraph(g, which(cores == max(cores)))
+unique(E(subgraph))
+```
+
+```{r}
+plot(subgraph, vertex.label.cex = 0.5, layout = layout_nicely, margin = 0.2, vertex.dist = 5.5)
+```
+
+Not very useful because we cannot see the network well. We have said that it shows that the graph may be dense, but we are going to compute its density to check.
+
+### Density
+
+Edge density is a measure used in graph theory to quantify how densely connected the vertices are within a graph. It represents the ratio of the actual number of edges in the graph to the total possible number of edges.
+
+The formula for edge density is:
+
+$$
+\text{den(G)} = \frac{L}{N(N-1)},
+$$
+
+where $L$ is the number of edges in the graph $G$ and $N$ is the number of vertices in the graph $G$. Hence, the denominator $N(N-1)$ represents the total possible number of edges in our directed graph with $N$ vertices, since $N(N-1)$ represents all possible ordered pairs of $N$ vertices.
+
+The density value spans from $0$ to $1$, reflecting the degree of connectivity within the graph. A density of $0$ signifies a sparse graph, indicating that the vertices are minimally connected, with numerous isolated components scattered throughout the graph. Conversely, a density of $1$ denotes a dense graph, where every possible edge is present, showcasing a high level of interconnectedness among the vertices and an abundance of direct connections linking them together.
+
+```{r}
+edge_density(g)
+```
+
+This output suggests that our graph is characterized by a relatively sparse structure, contrary to what we were suspecting. Consequently, our graph may exhibit numerous isolated components or disjointed clusters, with limited direct connections between vertices. Moreover, we can say that the graph lacks a high level of interconnectedness among its vertices.
+
+We know look at how densely surrounded are a couple of previously mentioned vertices, Mike Gallagher and Bernie Sanders, by using their their ego networks. An ego network is a subgraph of the original graph, where the ego is the central node, and the alters are the neighboring nodes directly connected to the ego.
+
+Firstly, we create an ego network centered around Mike Gallagher and, the, we calculate the edge density of that ego network. This edge density value provides insights into the level of connectivity within the ego network, specifically focusing on the connections involving "Mike Gallagher" and the vertices within a distance of 1 from him in the original graph.
+
+```{r}
+ego_mike_gallagher <- make_ego_graph(g,order=1,nodes=V(g)[212])
+edge_density(ego_mike_gallagher[[1]])
+```
+
+The edge density is approximately $0.1196$. This suggests that the connections within this ego network are relatively sparse, with approximately $11.96%$ of the possible connections being present. This indicates that Mike Gallagher and the vertices within one hop of him are not extensively connected, with several potential edges remaining unutilized.
+
+We do the same  with Bernie Sanders to be able to compare them.
+
+```{r}
+ego_bernie_sanders <- make_ego_graph(g,order=1,nodes=V(g)[71])
+edge_density(ego_bernie_sanders[[1]])
+```
+
+The edge density is now approximately 0.1485, indicating a slightly higher density compared to Mike Gallagher's ego network, with approximately 14.85% of the possible connections present. The connections within this ego network are relatively denser, implying a higher level of connectivity among Bernie Sanders and the vertices within one hop of him. Bernie Sanders is more densely surrounded than Mike Gallagher, even though we observed that Mike Gallagher was more influential.
+
+### Clustering coefficient (transitivity)
+
+We will measure the density of the graph in an alternative way. Density of triangles among connected triplets is going to be taken into consideration. 
+
+A triplet is a subgraph of three vertices connected by at least two edges. We denote $\tau_{\triangle}(G)$ the number of closet triplets (triangles) in a graph and $\tau_3(G)$ the number of all triplets in a graph. Then, the clustering coefficient or transitivity of a graph is 
+
+$$
+cl(G)=3\frac{\tau_{\triangle}(G)}{\tau_3(G)}
+$$
+
+Transitivity values lie between 0 and 1, providing a measure of global clustering. For this, undirected networks are considered instead of directed. 
+
+```{r}
+transitivity(g,type="global")
+```
+We see that the network is not very dense, thus, the relative frequency of triplets close to form triangles is not very high. 
+
+## Connectivity 
+### Components
+
+We obtain the number of components of the network. First, we consider the weak case. We have a single components in this case, as we saw in a previous work. Thus, our network is weakly connected, where the component is the whole network. 
+
+```{r}
+comps_weak <- components(g,mode="weak")
+comps_weak$no
+comps_weak$csize
+```
+
+For the strong case, we have 7 components. However, if we check the size of the components, we see that we have a components of size $469$ and the rest of the components have size 1, thus they are isolated vertices. The big component represents $98.7%$ of the total number of congresspeople. 
+
+```{r}
+comps_strong <- components(g,mode="strong")
+comps_strong$no
+comps_strong$csize
+```
+
+```{r}
+table(comps_strong$csize)
+```
+
+```{r}
+max(comps_strong$csize)/vcount(g)
+```
+
+We consider the strong case and stract the single component that has size bigger than one. Then, we compute the mean length of all the shortest paths from or to the vertices in such component and check that this number is equal to $0.0063907$, which does not seem to be a large number. Then, we compute the clustering coefficient (transitivity) that is equal to $0.2710319$.
+
+```{r}
+gc <- induced_subgraph(g,vids=V(g)[comps_strong$membershi==7])
+gc
+```
+
+```{r}
+mean_distance(gc, weights = 1 / E(gc)$weight)
+```
+
+```{r}
+transitivity(gc)
+```
+
+Therefore, the mean length of all the shortest paths from or to the vertices in the main component is small, while the clustering coefficient is not too big either. Therefore, it is not clear if the small world property appears to hold.
+
+### Vertex and edge connectivity
+
+Vertex connectivity refers to the minimum number of vertices that need to be removed in order to disconnect the graph. Edge connectivity is the minimum number of edges that need to be removed in order to disconnect the graph. 
+
+In both cases, we obtain that the minimum number of vertices/edges to be removed is 1. 
+
+If we look at the articulation points, we see that there are not single vertices that disconnect the network.
+
+```{r}
+vertex_connectivity(gc)
+edge_connectivity(gc)
+```
+
+```{r}
+art_gc <- articulation_points(gc)
+art_gc
+```
+
+# Assignment 5
+
+## Community Detection Methods
+
+A central issue to social network analysis is that of understanding the pattern of relations between individuals of the network. Through said study, there can be group of individuals that interact more closer or stronger with one another. This groups are usually referred to as communities. In this section several community detection methods will be used on the US Congress influence network.
+
+It is important to remember that out network is directed and not strongly connected, but rather comprised of 7 components out of which 6 are only made up of one vertex, leaving the seventh component to be the giant component. The community detection algorithms carried out here will use the giant component as input.
+
+
+### Optimal Modularity
+
+First, we could attempt to start with the optimal modularity community detection method, which maximizes the modularity over all possible partitions of the network. Unfortunately, considering the size of our network ($N=475$), this is too computationally demanding, and so it has not been possible.
+
+```{r eval=FALSE, include=TRUE}
+opti.mod = cluster_optimal(gc)
+```
+
+### Fast Greedy
+
+Due to optimal modularity being computationally expensive, a fast greedy algorithm was derived in order to be able to obtain similar solutions (although not necessarily optimal) to those of optimal modularity. This algorithm can be applied even to large networks, so it is possible to use for the network at hand. 
+
+```{r}
+greedy = cluster_fast_greedy(as.undirected(gc))
+```
+
+
+```{r}
+k.greedy = length(greedy)
+k.greedy
+```
+
+The Fast Greedy algorithm has found a total of five communities within the US Congress network.
+
+```{r}
+sizes(greedy)
+```
+
+The size of said communities varies greatly, with the two biggest networks taking up more than one third of all the Congresspeople each, and the smallest one being made up of only 2 individuals.
+
+We can also check the modularity attained by this partition:
+
+```{r}
+mod.greedy = modularity(greedy)
+mod.greedy
+```
+
+Finally, we can visualize the communities superimposed on the network.
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+plot(greedy, gc, main="Fast greedy", vertex.size=10, vertex.label.cex=0.001, edge.labels=data$weight,
+     edge.arrow.size=0.5)
+```
+
+Although a bit difficult to fully distinguish due to the size of the network, there are clearly two better defined communities, in which most of the nodes are close to each other, which correspond to the two biggest. The third biggest one is somewhat clear, while the smallest ones seems to be made up of those vertices which are perhaps more isolated. In any case, the amount of red arrows indicates that there is a lot of influence trade-off between different commmunities.
+
+### Louvain
+
+Next, the Louvain algorithm can be used. This algorithm runs hierarchically from local to global communities looking for optimal modularity. Furtheremore, it does so in a fast way, so that there is no problem applying it to this network. 
+
+```{r}
+louvain = cluster_louvain(as.undirected(gc))
+```
+
+```{r}
+k.louvain = length(louvain)
+k.louvain
+```
+
+```{r}
+sizes(louvain)
+```
+
+The Louvain algorithm detects four communities within the US Congress network. Three of them have somewhat similar sizes close to 200, while the other two are an intermidiately-sized one and an extremely small one
+
+The modularity of the partition can also be checked:
+
+```{r}
+mod.louvain = modularity(louvain)
+mod.louvain
+```
+
+We can also visualize the partition:
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+plot(louvain, g, main="Louvain", vertex.size=10, vertex.label.cex=0.001, edge.labels=data$weight,
+     edge.arrow.size=0.5)
+```
+
+In this case, no community seems to be overly clearly-defined in the visualization.
+
+
+### Label Propagation
+
+Another community detection algorithm that can be run on large networks is that of label propagation, which decides the community of each vertex taking into account the communities of its neighbors. Note that this algorithm has the option to take into account the direction of a network for the label propagation. It is also worth mentioning that the algorithm needs an initial label assignation for the vertices, which can be random although that sometimes leads to worse results, so the label assignation obtained through the Louvain algorithm has been used an initial state.
+
+
+```{r}
+label = cluster_label_prop(gc, mode="out", initial=as.vector(membership(louvain)))
+```
+
+```{r}
+k.label = length(label)
+k.label
+```
+
+```{r}
+sizes(label)
+```
+
+The label propagation algorithm has detected two communities within the US Congress network. Out of these, there is a big community with 311 vertices, and an intermediate one with 158 vertices.
+
+The modularity of this partition can be checked:
+
+```{r}
+mod.label = modularity(label)
+mod.label
+```
+
+Note that this modularity is the smallest one seen so far and, in particular, is much worse than that of the initial state given by the output of the Louvain algorithm.
+
+The communities can be visualized:
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+plot(label, g, main="Label propagation", vertex.size=10, vertex.label.cex=0.001, edge.labels=data$weight,
+     edge.arrow.size=0.5)
+```
+
+Once again, we observe two somewhat well defined communities.
+
+### Edge Betweenness
+
+Just like the optimal modularity community detection algorithm, the edge betweennes community detection algorithm is extremely labour intensive and so becomes incredibly computationally expensive as the size of the network increases. Such is the case that it has not been possible to run it for the US Congress network.
+
+```{r eval=FALSE, include=TRUE}
+edge = cluster_edge_betweenness(gc, directed=T, weights=1/E(gc)$weight)
+```
+
+
+### Walktrap
+
+Finally, the last community detection algorithm studied in this section will be the Walktrap algorithm. This method uses hierarchical clustering by defining a certain distance between the vertices of the network related to the probabilities of random walks.
+
+```{r}
+walktrap = cluster_walktrap(gc)
+```
+
+```{r}
+k.walktrap = length(walktrap)
+k.walktrap
+```
+
+```{r}
+sizes(walktrap)
+```
+
+The Walktrap algorithm detects a total of four communities in this network. The sizes of the communities is somewhat more balanced, with two big communities and two small communities of similar sizes.
+
+As always, it is important to check the modularity of the partition.
+
+```{r}
+mod.walktrap = modularity(walktrap)
+mod.walktrap
+```
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+plot(walktrap, g, main="Walktrap", vertex.size=10, vertex.label.cex=0.001, edge.labels=data$weight,
+     edge.arrow.size=0.5)
+```
+
+### Conclusion
+
+The results of the different algorithms are:
+
+```{r}
+data.frame(
+  row.names=c("K", "Modularity"),
+  Greedy=c(k.greedy, mod.greedy),
+  Louvain=c(k.louvain, mod.louvain),
+  Label=c(k.label, mod.label),
+  Walktrap=c(k.walktrap, mod.walktrap)
+)
+
+```
+
+It is the Louvain algorithm that attains the highest modularity, denoting the best partition, although closely followed by the results of the Fast Greedy and Walktrap algorithms, with the Label propagation algorithm performing the worst by far. 
+
+All in all, the network has been determined to have four communities of variable sizes:
+
+```{r}
+sizes(louvain)
+```
+
+The visualization of said communities is:
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+plot(louvain, gc, vertex.size=10, vertex.label.cex=0.001, edge.labels=data$weight,
+     edge.arrow.size=0.5)
+```
+
+
+## Assortativity coefficient
+
+A different way to characterize network cohesion is through the assortativity coefficient. It is a measure of the relationships between influencers, that is, whether they avoid each other or they link preferably with each other, leaving small-degree vertices to connect with other small-degree vertices.
+
+Before calculating the assortativity coefficient, it is useful to take a look at the degree pairs of the network:
+
+```{r}
+degrees <- degree(g)
+g_degrees <- matrix(NA,nrow=ecount(g),ncol=2)
+edges_g <- as_edgelist(g)
+for (i in 1:ecount(g)){
+  g_degrees[i,] = degrees[edges_g[i,]]
+}
+color_1 = "deepskyblue2"
+plot(g_degrees,pch=19, col=color_1, main="Degree pairs for the US Congress network",
+     xlab="Degree",ylab="Degree")
+```
+
+We can compute the assortativity coefficient:
+
+```{r}
+assortativity_degree(g)
+```
+
+A coefficient of -0.09 such as the one computed by this network indicates that the US Congress influence network is neutral, that is, the number of edges between the influencers coincides with what would be expected from chance.
+
+## Number of communities
+
+
+## Small world property
+
+In this final section, we assess whether out congresspeople network has the small world property. Firstly, we are going to use our network to generate a large number of random networks with the same number of vertices and edges than those of our congresspeople network. Then, for each network we obtain the clustering coefficient and the average path length.
+
+```{r, cache = TRUE}
+set.seed(10)
+N <- vcount(g)
+L <- ecount(g)
+n_trials <- 1
+num_tran <- vector(mode="numeric",length=n_trials)
+num_ave_path_length <- vector(mode="numeric",length=n_trials)
+for (i in 1 : n_trials){
+  ER_graph <- sample_gnm(n=N,m=L)
+  num_tran[i] <- transitivity(ER_graph)
+  num_ave_path_length[i] <- mean_distance(ER_graph)
+}
+```
+
+Next, we compare the results obtained with those of our network. In this case, note that the average path length of the karate network is 2.0639 which is in the middle of the histogram, which it is fine. However, the clustering coefficient is 0.2695 which is larger than the standard clustering coefficient of the networks with the same number of vertices and edges, which suggests that the karate network is closer to owning the small world property than networks with the same characteristics.
+
+CORRECT THIS BECAUSE IT IS NOT IN THE CENTER OF THE HISTOGRAM THE FIRST NUMBER
+
+```{r, cache = TRUE}
+dist <- distances(g, weights = rep(1, L))
+mean(dist[lower.tri(dist, diag = FALSE)])
+```
+
+```{r, cache = TRUE}
+transitivity(g, weights = rep(1, N))
+```
+
+```{r, cache = TRUE}
+hist(num_tran,
+     xlab="Clustering coefficients",ylab="Density",main="Congresspeople is 0.2695")
+hist(num_ave_path_length,
+     xlab="Average path length",ylab="Density",main="Congresspeople is 2.0639")
+```
