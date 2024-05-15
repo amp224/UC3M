@@ -1,0 +1,212 @@
+---
+title: "Assignment 1: Log-linear graphical models"
+author: "Alejandro Macías Pastor"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,warning=FALSE,message=FALSE}
+library(igraph)
+library(gRbase)
+library(gRim)
+set.seed(1234)
+```
+
+# 1. Introduction
+
+The aim of this report is to make a basic study of graphical log-linear models. To do so, a certain dataset has been selected, to which different types of graphical log-linear models will be fit and compared. A goodness-of-fit test will also be used to evaluate the performance of the best-fitting model.
+
+The dataset selected for this study is commonly referred to as the Asia or Chest Clinic dataset. It was first introduced by Lauritzen and Spegelhalter in their 1988 article "Local Computations with Probabilities on Graphical Structures and their Application to Expert Systems (with Discussion)". This dataset contains a simulated register of patients at a chest clinic, and aims to study the relation between shortness-of-breath (dyspnoea) and several other variables that might be related to it. One important detail that should be taking into account regarding the analysis of this dataset, is that when it was first introduced, it was used to study directed graphical models, instead of the undirected ones that will be discussed in this report.
+
+The dataset consists of the following eight binary variables:
+    *   `asia`: whether the patient has recently visited Asia
+    *   `tub`: tuberculosis status of the patient
+    *   `smoke`: smoking habits of the patient (smoker: yes/no)
+    *   `lung`: whether the patient suffers from lung cancer
+    *   `bronc`: whether the patient suffers from bronchitis
+    *   `either`: whether the patient has either lung cancer or tuberculosis
+    *   `xray`: whether the x-ray shows any signs of lung cancer or tuberculosis
+    *   `dysp`: whether the patient suffers from dyspnoea
+
+```{r}
+data("chestSim1000")
+
+data.chest = table(chestSim1000)
+```
+
+# 2. Model selection
+
+As mentioned earlier, in this section we will create and fit several models, only to later compare them and select the best-fitting one among them.
+
+We can start by fitting a model that represents the fundamental assumptions. Said assumptions are:
+  * A recent visit to Asia increases the chances of tuberculosis
+  * Smoking increases the chances of both lung cancer and bronchitis
+  * A positive X-ray is only able to indicate whether a patient might have tuberculosis or lung cancer
+  * tuberculosis, lung cancer and bronchitis all cause dyspnoea
+  
+```{r}
+mod.fun = dmod(~asia*tub+smoke*lung+smoke*bronc+tub*either+lung*either+bronc*dysp+either*xray+either*dysp,
+               data=data.chest)
+```
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+plot(mod.fun)
+```
+
+We can check the properties of this particular model.
+
+```{r}
+mod.fun$modelinfo$properties
+```
+As expected, this model is graphical but obviously it is not decomposable.
+
+Next, we can define some basic models, such as the saturated one, in which all variables are linked to each other, and a model where all variables are considered independent. Obviously, these two models are not themselves useful, but they will be the starting points for obtaining several models through stepwise selection.
+
+```{r}
+mod.sat = dmod(~.^.,data=data.chest)
+mod.init = dmod(~.^1,data=data.chest)
+```
+
+```{r}
+par(mfrow=c(1,2),mar=c(0,0,0,0)+.3)
+plot(mod.init)
+plot(mod.sat)
+```
+
+We can start using both backwards and forwards selection with the AIC under the restriction that the resulting models be decomposable.
+
+```{r}
+mbaic.rest = backward(mod.sat,details=0)
+mfaic.rest = forward(mod.init,details=0)
+```
+
+```{r}
+par(mfrow=c(1,2), mar=c(0,0,0,0)+.3)
+plot(mbaic.rest, main="Backwards selection (AIC)")
+plot(mfaic.rest, main="Forwards selection (AIC)")
+```
+
+Starting with the model obtained through backwards selection, we observe some independencies that might not make a lot of sense. According to this model, `lung` and `either` are independent given `tub`, when obviously whether a client has lung cancer and whether they have lung cancer or tuberculosis can never be independent, despite knowing their tuberculosis status. Another of this weird independencies is found when looking at `smoke` and `bronc`, which are allegedly independent given `tub`. This does not make sense, since smoking is always a risk factor for bronchitis, and not related at all with tuberculosis.
+
+We can now check the model obtained through forward selection. The first feature that comes to mind is how `asia` is completely independent from all other variables. We know that this is not true, since it at least should be related to the patient's tuberculosis status. Nonetheless, in this model the independencies between `xray` and `lung` and `tub` given `either` make sense, since knowing whether the patient has at least one of lung cancer or tuberculosis is enough to indicate that they will present a positive X-ray. This model also contains the mistake of claiming that `lung` and `either` are independent given `tub`.
+
+We can repeat this exact process but using the BIC instead:
+
+```{r}
+mbbic.rest = backward(mod.sat,k=log(sum(data.chest)),details=0)
+mfbic.rest = forward(mod.init,k=log(sum(data.chest)), details=0)
+```
+
+```{r}
+par(mar=c(0,0,0,0)+.3, mfrow=c(1,2))
+plot(mbbic.rest)
+plot(mfbic.rest)
+```
+
+Notice that the model obtained through forward selection with BIC is exactly the same as the one obtained through AIC, whereas the one obtained through backwards selection commits some of the same mistakes as the one obtained earlier.
+
+All of the previous steps can be repeated without restraining the model selection to decomposable models:
+
+```{r}
+mbaic_unrestricted = backward(mod.sat,type="unrestricted",details=0)
+mfaic_unrestricted = forward(mod.init,type="unrestricted",details=0)
+mbbic_unrestricted = backward(mod.sat,type="unrestricted",k=log(sum(data.chest)),details=0)
+mfbic_unrestricted = forward(mod.init,type="unrestricted",k=log(sum(data.chest)),details=0)
+
+```
+
+
+```{r}
+par(mfrow=c(1,2), mar=c(0,0,0,0)+.3)
+plot(mbaic_unrestricted)
+plot(mfaic_unrestricted)
+```
+
+Once again, forward selection yields exactly the same model even in the unrestricted case. When studying the model obtained from unrestricted backward selection, we see once again that the dependencies concerning `asia` are not quite obtained, since according to this model the tuberculosis status of a patient is independent of their recent visits to Asia if their smoking habits are known. Another mistake found in this model is that it represents `lung` and `either` as independent given `tub`, when for the similar reasons to the ones obtained earlier this is not possible.
+
+```{r}
+par(mfrow=c(1,2), mar=c(0,0,0,0)+.3)
+plot(mbbic_unrestricted)
+plot(mfbic_unrestricted)
+```
+
+Interestingly, when using unrestricted stepwise selection with BIC, the model that has been so far consistently obtained through forward selection, is now obtained from backwards selection.
+
+In order to select among all the models the best-fitting one, both AIC and BIC will be used.
+
+Starting with AIC:
+
+```{r}
+aic <- rep(NA,9)
+aic[1] = mod.fun$fitinfo$aic
+aic[2] = mbaic.rest$fitinfo$aic
+aic[3] = mbaic_unrestricted$fitinfo$aic
+aic[4] = mfaic.rest$fitinfo$aic
+aic[5] = mfaic_unrestricted$fitinfo$aic
+aic[6] = mbbic.rest$fitinfo$aic
+aic[7] = mbbic_unrestricted$fitinfo$aic
+aic[8] = mfbic.rest$fitinfo$aic
+aic[9] = mfbic_unrestricted$fitinfo$aic
+aic
+which(aic==min(aic))
+```
+
+According to AIC, the best-fitting model is the one obtained through unrestricted backwards stepwise selection using AIC.
+
+We can check whether the same scenario holds when comparing their BIC values:
+
+```{r}
+bic <- rep(NA,9)
+bic[1] = mod.fun$fitinfo$bic
+bic[2] = mbaic.rest$fitinfo$bic
+bic[3] = mbaic_unrestricted$fitinfo$bic
+bic[4] = mfaic.rest$fitinfo$bic
+bic[5] = mfaic_unrestricted$fitinfo$bic
+bic[6] = mbbic.rest$fitinfo$bic
+bic[7] = mbbic_unrestricted$fitinfo$bic
+bic[8] = mfbic.rest$fitinfo$bic
+bic[9] = mfbic_unrestricted$fitinfo$bic
+bic
+which(bic==min(bic))
+```
+According to BIC; the best-fitting model is the one obtained through unrestricted forwards stepwise selection using BIC.
+
+# 3. Goodnes-of-fit
+
+In an attempt to obtain more formal proof of the goodness-of-fit of our selected models, $\chi^2$-tests can be performed.
+
+```{r}
+pchisq(mbaic_unrestricted$fitinfo$dev, mbaic_unrestricted$fitinfo$dimension[4])
+```
+
+```{r}
+pchisq(mfbic_unrestricted$fitinfo$dev, mfbic_unrestricted$fitinfo$dimension[4])
+```
+
+The null hypothesis is not rejected in any of the tests performed, and thus both the model pass the goodness-of-fit $\chi^2$-test.
+
+
+# 4. Conclusions
+
+Several graphical log-linear models have been studied for the Asia dataset, among which two models, both of which being non-decomposable, have been selected by means of their smaller AIC and BIC, respectively.
+
+The model selected because of its AIC is:
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+plot(mbaic_unrestricted)
+```
+
+The model selected because of its BIC is:
+
+```{r}
+par(mar=c(0,0,0,0)+.3)
+plot(mfbic_unrestricted)
+```
+
+Both models have passed the $\chi^2$ goodness-of-fit test. Nonetheless, both model present some non-sensical independencies. It has been made clear by comparing the results to the well-known results for this dataset with directed graphical models that the latter represent much better the information contained.

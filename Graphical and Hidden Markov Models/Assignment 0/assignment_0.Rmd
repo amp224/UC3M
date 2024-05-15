@@ -1,0 +1,115 @@
+---
+title: "Assignment 0"
+author: "Alejandro Macías Pastor"
+date: "`r Sys.Date()`"
+output: 
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+\newcommand{\indep}{\perp \!\!\! \perp}
+\newcommand{\notindep}{\not \! \perp \!\!\! \perp}
+
+### 1. Suppose that the joint distribution of a discrete variable, $X$ and two continuous variables $Y$ and $Z$ is
+
+$$ f(x,y,z) \propto \frac{z^{\alpha+x}}{x!} e^{-(\beta + y + 1)z}, \quad \text{with } x=0,1,2,\dots \text{ and} \;y,z \geq 0$$
+
+### (a) Are $X$ and $Y$ conditionally independent given $Z$? Why?
+
+According to the Factorisation Theorem, $X$ and $Y$ will be conditionally independent if it holds that $f(x,y,z) = g(x,z)h(y,z)$ for some non-negative functions $g$ and $h$.
+
+It is straightforward to show that this holds for our density function defining $g(x,z) = \frac{z^{\alpha+x}}{x!}$ and $h(y,z) = e^{-(\beta + y + 1)z}$, which are both non-negative within the range of the variables and:
+
+$$ f(x,y,z) \propto \frac{z^{\alpha+x}}{x!} e^{-(\beta + y + 1)z} = g(x,z)h(y,z)$$
+
+### (b) Are $X$ and $Y$ independent? Why?
+
+$X$ and $Y$ will be independent if it holds that $f_{(X,Y)}(x,y) = f_X(x)f_Y(y)$. Therefore, the first step is to obtain $f_{(X,Y)}(x,y)$ from $f(x,y,z)$ by integrating $z$ out:
+
+
+$$ f_{(X,Y)}(x,y) \propto \frac{1}{x!} \int_{0}^{+\infty} z^{\alpha+x}e^{-(\beta+y+1)z}dz = \frac{1}{x!} \frac{\Gamma(\alpha+x+1)}{(\beta+y+1)^{\alpha+x+1}} $$
+where we have made use of the fact that the integrand is the kernel of a Gamma$(\alpha+x+1,\beta+y+1)$ distribution.
+
+It is easy to see that the expression for $f_{(X,Y)}(x,y)$ is in no way separable into $f_X(x)$ and $f_Y(y)$, which means $X$ and $Y$ are not independent.
+
+### (c) Draw an undirected graph to represent the dependence structure of $X$, $Y$ and $Z$.
+
+The following is an undirected graph that represents the dependence structure between the three variables:
+
+```{r}
+g <- igraph::graph(c("X","Z", "Z","Y"), directed = FALSE)
+plot(g)
+```
+
+In this undirected graph, the variables $X$ and $Y$ are independent given $Z$, as the latter separates the two. However, $X$ and $Y$ are not independent because a path can still be formed between the two.
+
+
+### (d) Draw a directed graph to represent the dependence structure of $X$, $Y$ and $Z$.
+
+The following directed graph represents the dependence structure between the three variables:
+
+```{r}
+dig <- igraph::graph(c("X","Z", "Z","Y"), directed = TRUE)
+plot(dig)
+```
+
+In this cascade structure, $X$ and $Y$ are not independent since there is an active path from the former to the latter. They are, however, conditionally independent as they are d-separated given $Z$.
+
+
+### 2. Considering the following undirected graph.
+
+```{r echo=FALSE}
+g2 = igraph::graph(edges=c("B","A", "A","C", "A","E", "C","D", "D","E"), isolates=c("F"), directed = FALSE)
+plot(g2)
+```
+
+
+### (a) What are the maximal cliques in this graph?
+
+Let us remember that a maximal clique in an undirected graph is a clique to which no node can be added to make a bigger clique.
+
+The maximal cliques of a graph can be obtained using the `max_cliques` function from the `igraph` library.
+
+```{r}
+igraph::max_cliques(g2)
+```
+
+
+### (b) What is the dependence structure represented by this graph?
+
+Clearly, $F$ is independent from all other variables, as it is completely disconnected, while the rest of the variables are not independent from each other as there exists paths among them. However, some conditional independence holds, namely $B \indep C,E | A$ and $D \indep A | C,E$, although $A \notindep D | C$ and $A \notindep D | E$. Furthermore, $B \indep E |A,C,E$ but $B \notindep E | A,E$ and $B \notindep E | A,C$.
+
+### 3. Consider the following directed graph:
+
+```{r echo=FALSE}
+g3 = igraph::graph(c("F","E", "E","D", "B","A", "C","A", "A","D"), directed=TRUE)
+plot(g3)
+```
+
+### (a) Are nodes A and F independent? Why?
+
+Nodes $A$ and $F$ are independent since there is not active path between them, as there is a collision structure around node $D$. 
+
+### (b) Are nodes A and F independent given D? Why?
+
+To tell if $A$ and $F$ are independent given $D$ we can use the algorithm for d-separation.
+First, we moralize and disorientate the graph:
+
+```{r echo=FALSE}
+g3.alg = gRbase::moralize(g3)
+plot(g3.alg)
+```
+
+Then we remove the givens, that is, $D$ in this case:
+
+```{r echo=FALSE}
+g3.alg = igraph::delete_vertices(g3.alg, c("D"))
+plot(g3.alg)
+```
+
+Since the variable $A$ and $F$ are still connected, they are not independent.
+
