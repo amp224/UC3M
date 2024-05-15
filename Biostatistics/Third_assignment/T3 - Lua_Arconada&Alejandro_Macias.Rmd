@@ -1,0 +1,762 @@
+---
+title: "Third Assignment"
+author: "Lúa Arconada & Alejandro Macías"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(lme4)
+library(nlme)
+library(desplot)
+library(lattice)
+library(brms)
+library(ggplot2)
+library(rstanarm)
+library(faraway)
+set.seed(1234)
+```
+
+
+### 1. The dataset `Cultivation` is part of the package `SASmixed`. It corresponds to an experiment in which 4 blocks were used, each block was divided in half, and two varieties of grass were assigned to each half. Each plot occupied by a variety was divided into three and each was inoculated with a different bacterium. 
+
+```{r}
+library(SASmixed)
+data("Cultivation")
+```
+
+
+```{r}
+with(Cultivation, xyplot(drywt ~ Inoc | Block, groups = Cult, aspect = "xy", type = "o"))
+```
+
+### Fit the appropriate random effects model, test the fixed effects, and check the model assumptions.
+
+The response variable of interest is the dry weight yields, on which we want to study the influence of a type of bacterium. Since the true interest of the study is not limited to the plots of land used in it, but rather is to be generalised to other plots of land with those varieties of grass, the variable `Block` will be treated as a random effect, in which `Cult` will be nested. Furthermore, the model will also consider the interaction between the grass variety and the type of bacterium.
+
+```{r}
+bact_3 = lme(drywt ~ Cult*Inoc, random = ~1 | Block/Cult, data=Cultivation)
+
+summary(bact_3)
+```
+
+First, the block effect will be tested, by fitting a model without random effects and a model with the random effect of `Block`, and using the Likelihood Ratio Test. The hypothesis test carried out corresponds to:
+  * $H_0: \; \sigma_u^2=0$
+  * $H_1: \; \sigma_u^2 > 0$
+
+```{r}
+bact_1 = lm(drywt ~ Cult*Inoc, data=Cultivation)
+
+bact_2 = lme(drywt ~ Cult*Inoc, random = ~1|Block, data=Cultivation)
+
+test12 = -2*logLik(bact_1, REML = T) + 2*logLik(bact_2, REML = T)
+
+mean(pchisq(test12, df=c(0,1), lower.tail = F))
+```
+
+The random effects are significant at the usual significant level of 0.05 (and even at 0.005 significance), so they will be included in the model.
+
+Next, the effect of the grass variety within the block will be tested:
+
+```{r}
+test23 = -2*logLik(bact_2, REML =T) + 2*logLik(bact_3, REML =T)
+
+mean(pchisq(test23, df=c(0,1), lower.tail = F))
+```
+Once again, the effect is significant at the usual level of 0.05.
+
+Having established that the random effects selected are significant, the next step is to test the fixed effects. For that we define four models with an increasing number of predictors, starting from no predictors all the way to both predictors and their interaction.
+
+```{r}
+bact_ml_1 = lme(drywt ~ 1, random = ~1 | Block/Cult, Cultivation, method = "ML")
+
+bact_ml_2 = lme(drywt ~ Cult, random = ~1 | Block/Cult, Cultivation, method = "ML")
+
+bact_ml_3 = lme(drywt ~ Cult + Inoc, random = ~1 | Block/Cult, Cultivation, method = "ML")
+
+bact_ml_4 = lme(drywt ~ Cult*Inoc, random = ~1 | Block/Cult, Cultivation, method = "ML")
+
+anova(bact_ml_1, bact_ml_2, bact_ml_3, bact_ml_4)
+```
+
+Neither `Cult` nor the interaction between `Cult` and `Inoc` are significant, so the final model will only have `Inoc` as a fixed effect:
+
+```{r}
+bact_fin = lme(drywt ~ Inoc, random = ~1 | Block/Cult, Cultivation, method = "REML")
+
+bact_fin
+```
+
+Now that the model has been established, it is of vital importance to check its assumptions.
+
+First, the normality of the residuals at the lowest level can be checked. A quick way to do so is by plotting them:
+
+```{r}
+Res = residuals(bact_fin, type = "normalized")
+Fit = fitted(bact_fin)
+
+par(mfrow=c(1,2))
+plot(Res~Fit)
+qqnorm(Res)
+abline(0,1)
+```
+
+They seem to have constant variance and an approximately normal distribution, although the latter can be more formally checked by means of the Shapiro-Wilk test:
+
+```{r}
+shapiro.test(Res)
+```
+
+As was expected, the test confirms normality.
+
+Next, the normality of the residuals at the `Block` and `Cult` level have to be checked.
+
+```{r}
+bact_lmer = lmer(drywt ~ Inoc + (1|Block/Cult), data = Cultivation)
+
+qqmath(ranef(bact_lmer, condVar = TRUE))$Block
+```
+
+Since a straight line can be drawn within the intervals, the residuals at the `Block` level seem to follow a normal distribution.
+
+Repeating the plot for the residuals at the `Cult` level:
+
+```{r}
+qqmath(ranef(bact_lmer, condVar = TRUE))$Cult
+```
+
+Once again, we observe what seems like normality, confirming that the model assumptions are fulfilled.
+
+### 2. The dataset `maths.txt` contains the following data:
+
+  * `math.8`: a math-test score when the student was eight years old.
+  
+  * `math.11`: a current math-test score.
+  
+  * `female`: a dummy variable coded 1 for girls and 0 for boys.
+  
+  * `manual`: a dummy variable coded 1 if the student's parent (presumably the main wage earner) is in a manual occupation and 0 otherwise.
+  
+  * `school`: a number indicating which school the student attends.
+  
+```{r}
+maths=read.table("maths.txt",header=TRUE)
+```
+
+```{r}
+maths$female = factor(maths$female)
+maths$manual = factor(maths$manual)
+maths$school = factor(maths$school)
+```
+
+  
+### Add the following two variables to the data set:
+
+  * The mean age-8 math score in the student's school.
+  
+```{r}
+mean_math_8 <- aggregate(math.8 ~ school, data = maths, FUN = mean)
+
+maths <- merge(maths, mean_math_8, by = "school", suffixes = c("", ".mean"))
+```
+  
+  * The deviation between the student's age-8 math score and the mean score in her/his school (i.e., compute the school-centred age-8 math score).
+
+```{r}
+maths$math.8.deviation <- maths$math.8 - maths$math.8.mean
+```
+  
+  
+### i) Using the `lmList` function in the `nlme` package (this function will allow you to fit a model for each school at the same time), regress age-11 math scores on centred age-8 scores and the dummy variables for gender and class. Look at the within-schools coefficients. Why are some missing? Then plot each set of coefficients (i.e., starting with the intercepts) against the school mean age-8 math scores. 
+
+### Do the coefficients appear to vary systematically by the school’s mean age-8 scores?
+
+We start by fitting the described model: a regression of age-11 math scores by centred age-8 scores, gender and class for each school:
+
+```{r, warning=F}
+mod <- lmList(math.11 ~ math.8.deviation + female + manual | school, data = maths)
+```
+
+Then, the coefficients of each model (each school) can be checked:
+
+```{r}
+coef(mod)
+```
+
+Some coefficients are missing possibly due to a lack of enough observations with different values to correctly estimate the coefficients, leading to singularities that end up showing in the form of NAs.
+
+In order to identify systematic variations in the coefficients by the mean age-8 scores, we can plot them. Starting with the intercept coefficients:
+
+```{r}
+plot(unique(maths$math.8.mean), coef(mod)[-1,1], xlab = "Mean Age-8 Math Scores", ylab = "Intercept coefficients")
+```
+
+```{r}
+plot(unique(maths$math.8.mean), coef(mod)[-1,2], xlab = "Mean Age-8 Math Scores", ylab = "Math.8.deviation coefficients")
+```
+
+```{r}
+plot(unique(maths$math.8.mean), coef(mod)[-1,3],xlab = "Mean Age-8 Math Scores" ,
+ylab = "Female coefficients")
+```
+
+```{r}
+plot(unique(maths$math.8.mean), coef(mod)[-1,4],xlab = "Mean Age-8 Math Scores" ,
+ylab = "Manual coefficients")
+```
+Making exceptions for what seems like some outliers, the coefficients for the intercept and the other predictor seem to vary systematically with mean age-8 math scores, around different values and to different extents depending on the predictor that is being considered. For the intercept, the coefficient vary around approximately 33 and from 28 to 40. For the deviation of age-8 math scores from the school's mean, the coefficients vary from 0 to 1.5 and mostly around 0.75. For `female` the coefficients vary around 0 with a maximum distance of 5 (discarding the two outliers), and so do the coefficients for `manual`.
+
+
+### ii) Fit linear mixed-effects models to the Maths data, proceeding as follows:
+
+  * Begin with a random-intercept model of age-11 math scores by schools. How much of the variation in age-11 scores is between schools?
+  
+We can fit the random-intercept model by simply not defining any predictors in the fixed effects part of the model:
+  
+```{r}
+model_intercept <- lme(math.11 ~ 1, random = ~ 1 | school, data = maths)
+summary(model_intercept)
+```
+```{r}
+VarCorr(model_intercept)
+```
+The variation in age-11 scores between schools account for 4.9866 units, or $\frac{4.9866}{4.9866+38.8019}\approx 11\%$ of the total variation.
+  
+  * Fit a random-coefficients regression of age-11 math scores on the student's centred grade-8 scores, gender, and class. Initially include random effects for the intercept and all three explanatory variables. Test whether the random effects are needed and eliminate from the model those that are not. Check the significance of the fixed effects. Interpret the coefficients.
+  
+We start by fitting the model as is described by using the `lme4` library:  
+
+```{r, message=FALSE}
+model_all <- lmer(math.11 ~ math.8.deviation + female + manual + (math.8.deviation + female + manual | school),
+                   data = maths, REML = TRUE)
+
+summary(model_all)
+```
+
+Once the model has been fitted, we can start to test for the significance of the different random effects. To do so, we have to progressively delete variables from the random effects and perform the Likelihood Ratio Test:
+
+```{r, message=FALSE}
+model_no_rand_dev <- lmer(math.11 ~ math.8.deviation + female + manual + (female + manual | school),
+                            data = maths, REML = TRUE)
+test=-2*logLik(model_no_rand_dev) + 2*logLik(model_all)
+mean(pchisq(test,df=c(0,1),lower.tail=FALSE))
+```
+
+The considerably small p-value indicates that the random effect associated with the age-8 math score deviation from the school's mean is significant at the 0.05 level, and so it should be included.
+
+We can repeat this test for the `female` random effect:
+
+```{r, message=FALSE}
+model_no_rand_fem <- lmer(math.11 ~ math.8.deviation + female + manual + (math.8.deviation + manual | school),
+                             data = maths, REML = TRUE)
+test=-2*logLik(model_no_rand_fem) + 2*logLik(model_all)
+mean(pchisq(test,df=c(0,1),lower.tail=FALSE))
+```
+
+In this case, the null hypothesis is not rejected at the 0.05 significance level and so the LRT test indicates that the random effect associated with the gender is not significant, and it should be excluded.
+
+Finally, the `manual` random effect can be tested for significance:
+
+```{r, message=FALSE, warning=FALSE}
+model_no_rand_man <- lmer(math.11 ~ math.8.deviation + female + manual + (math.8.deviation+female | school), 
+                             data = maths, REML = TRUE)
+test=-2*logLik(model_no_rand_man) + 2*logLik(model_all)
+mean(pchisq(test,df=c(1,2),lower.tail=FALSE))
+```
+  
+Once again, we find that the random effect is not significant at the 0.05 significance level and so it should be excluded from the model.
+
+Finally, it can be double-checked that the removal of this variables has been done correctly by performing the LRT once again, although carefully taking into account that, since two random effects have been removed, this time the distribution of the statistic under the null hypothesis would be a $\frac{1}{2}\left( \chi^2_1+\chi^2_2 \right)$ instead of a $\frac{1}{2}\left( \chi^2_0+\chi^2_1 \right)$.
+  
+```{r warning=FALSE}
+model_no_rand_man_fem <- lmer(math.11 ~ math.8.deviation + female + manual + (math.8.deviation | school),
+                                 data = maths, REML = TRUE)
+test=-2*logLik(model_no_rand_man_fem) + 2*logLik(model_all)
+mean(pchisq(test,df=c(1,2),lower.tail=FALSE))
+```
+  
+The test confirms what was found so far, that is, only the random effect associated with the deviation from the school mean is significant.
+
+Next, the fixed effects can be tested for significance. It is important to note that for this, the models have to be fit using Maximum Likelihood instead of Restricted Maximum Likelihood.
+
+We start by checking the significance of the variable `female`:
+  
+```{r, warning=FALSE}
+model_no_fem <- lmer(math.11 ~ math.8.deviation + manual + (math.8.deviation | school),
+                       data = maths, REML = FALSE)
+
+model_fem <- lmer(math.11 ~ math.8.deviation + female +manual + (math.8.deviation | school),
+                 data = maths, REML = FALSE)
+
+anova(model_no_fem,model_fem)
+```
+  
+The p-value being 0.4073 indicates that the variable is not significant and should be excluded.
+
+Repeating this process for the other fixed effects:
+  
+```{r}
+model_no_fem_dev <- lmer(math.11 ~ manual + (math.8.deviation | school), 
+                         data = maths, REML = FALSE)
+anova(model_no_fem_dev,model_no_fem)
+```
+  
+```{r, warning=FALSE}
+model_no_fem_man <- lmer(math.11 ~ math.8.deviation + (math.8.deviation | school),
+                          data = maths, REML = FALSE)
+
+anova(model_no_fem_man, model_no_fem)
+```
+  
+We find that the variable associated with the deviation from the mean is significant and should be included, just like the variable `manual`. 
+
+Since we are dealing with some sort of longitudinal data, it might be of interest to test for independence as well. 
+
+```{r}
+model_no_fem_ind <- lmer(math.11 ~ math.8.deviation + manual + (math.8.deviation || school),
+                             data = maths, REML = FALSE)
+
+anova(model_no_fem_ind,model_no_fem)
+```
+  
+The p-value is extremely low, indicating that there is in fact no independence.
+  
+
+  * Introduce the mean school age-8 math score as a level-2 explanatory variable, but only for the level-1 coefficients that were found to vary significantly among schools in part (ii). Test whether the random effects which are in the model, are still required now that there is a
+level-2 predictor in the model.
+
+```{r, warning=FALSE}
+model_level2 <- lmer(math.11 ~ math.8.deviation + manual + math.8.mean + (math.8.deviation | school), 
+                   data = maths, REML = TRUE)
+```
+
+```{r,warning=FALSE}
+model_level2_norand <- lmer(math.11 ~ math.8.deviation + manual + math.8.mean + (1 | school),
+                           data = maths, REML = TRUE)
+test=-2*logLik(model_level2_norand) + 2*logLik(model_level2)
+mean(pchisq(test,df=c(0,1),lower.tail=FALSE)) # p=1
+```
+
+Even after introducing the mean school age-8 math score as a level-2 explanatory variable, the random effects are still required.
+
+Finally, for a correct estimation of the random effects, the model is refit using REML:
+
+```{r, warning=FALSE}
+model_final <- lmer(math.11 ~ math.8.deviation + manual + (math.8.deviation | school),
+                    data = maths, REML = TRUE)
+
+summary(model_final)
+```
+
+  * Briefly summarize your findings.
+
+A relation between the occupation of a child's parents and their math score at age 11 has been found, as well as between the child's score at age 8 and their score at age 11. More specifically, an increase in one point of deviation from the school's mean math score at age 8 leads to an increase in 0.63197 points in their math score at age 11. The occupation of the parents accounts for differences of 1.08921 on average, increasing those scores of children whose parents do not work in manual occupations. The estimated mean age-11 math score has been found to be 31.43586. It has also bee found that the child's gender is not significant with respect to their age-11 math score.
+
+Furthermore, there has been significant variation in the math score at age 11 between schools, as well as variation in the relation between math scores at age 8 and age 11 between different schools. Nonetheless, this model has left a considerable amount of unexplained variance. The estimated variance of age-11 math scores between schools is 6.31565.
+
+
+  
+### 3. The dataset `eating.txt` contains data on the exercise histories of 138 teenage girls hospitalized for eating disorders and on a group of 93 control subjects. The variables are:
+
+  * `subject`: an identification code; there are several observations for each subject, but because the girls were hospitalized at different ages, the number of observations and the age at the last observation vary.
+  
+  * `age`: the subject’s age in years at the time of observation. All but the last observations for each subject were collected retrospectively at intervals of two years, starting at age 8.
+  
+  * `log.exercise`: A transformation of the amount of exercise in which the subject engaged, expressed as estimated hours per week. The transformation consisted in taking logs (and using logs to the base 2 for interpretability), but because there are some 0 values of exercise, five minutes (5/60 of an hour) were added to each value of exercise before taking logs.
+  
+  * `group`: a factor indicating whether the subject is a patient or a control.
+  
+```{r}
+eating = read.table("eating.txt", header = TRUE)
+eating$subject=factor(eating$subject)
+eating$group=factor(eating$group)
+```
+  
+  
+### i) Fit regressions of `log.exercise` on `age` for each subject and look at the coefficients as in the previous exercise.
+
+We can fit a regression for each subject by means of the function used in the previous exercise:
+
+```{r}
+models.subject = lmList(log.exercise ~ age | subject, data = eating)
+```
+
+We can now check whether there are any anomalies in the form of missing values within the coefficients:
+
+```{r}
+unique(is.na(coef(models.subject)))
+```
+
+There are none.
+
+To repeat what was done in the previous exercise we have to store the coefficients for each model and compute the mean log-exercise for each subject.
+
+```{r}
+subject_ids = unique(eating$subject)
+coefficients = vector("list", length(subject_ids))
+for (i in 1:length(subject_ids)) {
+  subject_data = subset(eating, subject == subject_ids[i])
+  lm_model = lm(log.exercise ~ age, data = subject_data)
+  coefficients[[i]] <- coef(lm_model)
+}
+```
+
+```{r}
+intercepts <- sapply(coefficients, "[[", "(Intercept)")
+```
+
+
+```{r}
+mean.log.exercise.subject <- aggregate(log.exercise ~ subject, data = eating, FUN = mean)
+eating <- merge(eating, mean.log.exercise.subject, by = "subject", suffixes = c("", ".mean"))
+```
+
+Now, we can plot the mean log-exercise pero subject against the interceps:
+
+```{r}
+plot(unique(eating$log.exercise.mean), intercepts, xlab = "Mean log-Exercise per Subject",
+ylab = "Intercept Coefficients")
+```
+
+The range of the variation seems to be from -10 to around 7, and it seems to decrease as the mean log-exercise per subject increases.
+
+We can also plot the coefficients associated to the `age` variable against the mean log-exercise per subject:
+
+```{r}
+plot(unique(eating$log.exercise.mean), coef(models.subject)[,2],
+xlab = "Mean log-Exercise per Subject", ylab = "Age")
+```
+
+Once again, we see how the variability decreases as the mean log-exercise increases. This time the extent of variation seems to go from -0.75 to 1.
+
+
+
+### ii) Fit a model for this longitudinal dataset considering the appropriate fixed and random effects. Test the effects and give the appropriate conclusions.
+
+We want to study the effects of age and group on the log-exercise from the sample of subjects at hand. Therefore, `subject` will account for the random effect of selecting randomly from a bigger population, whereas `age` and `group` will act as fixed effects.
+
+```{r}
+mod_all <- lmer(log.exercise ~ age + group + (1 | subject), data = eating)
+summary(mod_all)
+```
+
+Now that the model has been fit, we can start by checking whether the random effects associated with `subject` are necessary, by means of the usual LRT:
+
+```{r}
+mod_no_random <- lm(log.exercise ~ age + group, data = eating)
+test=-2*logLik(mod_no_random) + 2*logLik(mod_all)
+mean(pchisq(test,df=c(0,1), lower.tail=FALSE))
+```
+
+The extremely low p-value indicates that the random effects are significant at the 0.05 level and so should be included.
+
+Since we know now that the random effects are necessary, we proceed to check the significance of the fixed effects. For this, the models have to be refit using Maximum Likelihood instead of Restricted Maximum Likelihood.
+
+```{r}
+mod_no_age <- lmer(log.exercise ~ group + (1 | subject), data = eating, REML = FALSE)
+mod_all <- lmer(log.exercise ~ age + group + (1 | subject), data = eating, REML = FALSE)
+anova(mod_no_age, mod_all)
+```
+
+The test indicates that the null hypothesis should be rejected at the 0.05 significance level, meaning that the `age` variable is significant and should not be dropped from the model.
+
+
+```{r}
+mod_no_group <- lmer(log.exercise ~ age + (1 | subject), data = eating, REML = FALSE)
+mod_all <- lmer(log.exercise ~ age + group + (1 | subject), data = eating, REML = FALSE)
+anova(mod_no_group, mod_all)
+```
+
+A similar result is obtained for the `group` variable, which is also significant and will therefore be included in the final model.
+
+Said final model is:
+
+```{r}
+mod_fit <- lmer(log.exercise ~ age + group + (1 | subject), data = eating)
+summary(mod_fit)
+```
+
+The model's summary indicates that the estimated average`log.exercise` is -2.4678 when all other variables take 0 value, or in units of time, approximately 5 minutes, which coincidentally is the value added to every measured time in order to avoid taking the logarithm of a null value, and so in reality it actually is 0 minutes. Age has been found to be positively correlated with the logarithm of the exercise time, increasing the logarithm about 0.21561 with every year. The coefficient of the fixed effects associated with `group` shows that patients on average have a value of logarithm of their exercise time about 0.40846 units bigger than those part of the control group. 
+Furthermore, the random effect associated with `subject` shows that there is a considerable variability due to the different subjects, with an estimated variance of 1.836, account for about half of the total variability. However, the model leaves a residual variance or unexplained variability of 1.922, or about half of the total variability. 
+
+
+
+### 4. Take two examples from Chapter 3, one from the Multilevel Models section and the other from the Longitudinal data and repeated measurements section. Apply and justify a Bayesian approach and explain the obtained results.
+
+
+### Example from the Multilevel Models section
+
+The data corresponds to a study to evaluate patient satisfaction. It was carried out in 160 hospitals and a total of 7185 patients were interviewed. The number of observations per hospital was between 14 and 67. So they were very different: it was not a complete block design.
+
+The following variables were collected:
+- `sex`: gender of the patient.
+- `satis`: the standardized level of satisfaction.
+- `sector`: identifies if the hospital was public or private.
+- `cenlevel`: a continuous measure of the socioeconomic level of the patient (the `level` variable, but centered).
+
+```{r}
+Satis = read.table("satisfaction.txt", header = TRUE )
+# First set as factors the categorical variables
+Satis $ hospital = factor ( Satis $ hospital )
+Satis $ sex = factor ( Satis $ sex )
+Satis $ sector = factor ( Satis $ sector )
+head(Satis)
+```
+
+### Bayesian approach for satisfaction example
+
+```{r, warning = FALSE}
+# Load required packages
+library(rstanarm)
+
+# Load your dataset (assuming it's named Satis)
+# Ensure it contains variables: satis, cenlevel, hospital
+
+# Define and fit the Bayesian model with explicit prior specifications
+bayesian_model <- stan_glm(satis ~ cenlevel, data = Satis, 
+                           prior_intercept = normal(0, 10),  # Prior for the intercept
+                           prior = normal(0, 10),  # Prior for the coefficient of cenlevel
+                           prior_aux = cauchy(0, 5),  # Prior for residual standard deviation
+                           chains = 4, iter = 2000)
+```
+
+```{r}
+# Summarize the results
+summary(bayesian_model)
+```
+
+The slope is $2.2$, which is pretty close to $2.19$, which was the slope in the example seen in class. In this model, our value indicates that for each unit increased by the socioeconomic level, the satisfaction increases in $2.2$ units. The estimated standard deviation of the residuals is $6.7$. This represents the variability in patient satisfaction that is not explained by the `cenlevel` predictor.
+
+If we take a look at the fit diagnostics, the mean posterior predictive distribution (PPD) of the outcome variable (`satis`) is estimated to be around $12.8$. This provides an average prediction of patient satisfaction based on the Bayesian model. Moreover, the Monte Carlo standard error (mcse) for each parameter is zero, indicating good precision in the estimation. Furthermore, the potential scale reduction factor (Rhat) for each parameter is $1.0$, indicating convergence of the MCMC chains. Finally, the effective sample size (n_eff) for each parameter is sufficiently large, indicating good mixing and reliability of the posterior samples.
+
+Overall, the Bayesian model suggests that socioeconomic level (`cenlevel`) is a significant predictor of patient satisfaction (`satis`), with higher socioeconomic levels associated with higher satisfaction levels, on average.
+
+```{r, warning = FALSE}
+# Fit a Bayesian model with priors for the coefficients associated with hospital
+hospital_model <- stan_glm(satis ~ cenlevel + hospital, 
+                            data = Satis, 
+                            prior_intercept = normal(0, 10),  # Prior for the intercept
+                            prior = c(normal(0, 10),          # Prior for the coefficients of cenlevel
+                                      student_t(df = 3, 0, 2)),  # Prior for the coefficients of hospital
+                            prior_aux = cauchy(0, 5),         # Prior for residual standard deviation
+                            chains = 4, iter = 2000)          # MCMC settings
+```
+
+```{r}
+summary(hospital_model)
+```
+
+Our model now includes two predictors, `cenlevel` and `hospital`. and there are 4000 posterior samples obtained through sampling. In the estimates section, each coefficient estimate is associated with a specific level of the `hospital` variable, indicating that it is a categorical predictor with multiple levels.
+
+Comparing with the previous model's output, we can see any changes in the model's performance, convergence, or parameter estimates. For instance, if there are significant changes in the coefficient estimates or if the MCMC diagnostics indicate better convergence, it suggests that this model might be an improvement over the previous one. Additionally, comparing the fit diagnostics can reveal whether the new model provides a better fit to the data.
+
+Both models are statistical models estimated using Bayesian methods. The first model is a simple linear regression model with one predictor (`cenlevel`), while the second model is a more complex linear regression model with multiple predictors, including `cenlevel` and several dummy variables representing different hospitals.
+
+As we mentioned, the second model includes additional predictors (`hospital2` to `hospital161`) compared to the first model, which only has one predictor (`cenlevel`). These additional predictors represent different hospitals, suggesting that the second model is more detailed and accounts for the potential variability in satisfaction ratings across different hospitals.
+
+Moreover, in both models, the coefficient estimate for `cenlevel` is $2.2$, suggesting a positive association between the level of care (`cenlevel`) and satisfaction (`satis`). This estimate remains consistent between the two models.
+
+Furthermore, the intercept values differ between the two models. In the first model, the intercept is around $12.8$, while in the second model, it is around $11.2$. This suggests that when considering the effect of hospitals in the second model, the overall level of satisfaction (`satis`) tends to be lower.
+
+In addition, the second model appears to have better convergence and mixing properties compared to the first model, as indicated by the `n_eff` (effective sample size) and `Rhat` (potential scale reduction factor) diagnostics. This suggests that the second model provides a better fit to the data and more reliable parameter estimates. We improved the model taking the hospital into account.
+
+Finally, the mean posterior predictive distribution of the outcome variable (`mean_PPD`) is similar between the two models, with values around $12.7$ or $12.8$. This suggests that both models provide similar predictions for the outcome variable based on the observed data.
+
+Overall, the second model, which includes additional predictors representing different hospitals, provides a more comprehensive analysis of the factors influencing satisfaction ratings. It accounts for potential variations in satisfaction across different hospitals, which the first model does not consider. Additionally, the second model appears to have better convergence properties, indicating more reliable parameter estimates.
+
+However, we are not satisfied and we want to see if we can improve the model and for that, we tinclude interactions.
+
+```{r, warning = FALSE}
+# Fit a Bayesian model with priors for the coefficients associated with hospital and interaction term
+interaction_model <- stan_glm(satis ~ cenlevel * hospital, 
+                            data = Satis, 
+                            prior_intercept = normal(0, 10),  # Prior for the intercept
+                            prior = c(normal(0, 10),          # Prior for the coefficients of cenlevel
+                                      student_t(df = 3, 0, 2),  # Prior for the coefficients of hospital
+                                      student_t(df = 3, 0, 2)), # Prior for the coefficients of interaction term
+                            prior_aux = cauchy(0, 5),         # Prior for residual standard deviation
+                            chains = 4, iter = 2000)          # MCMC settings
+```
+
+```{r}
+summary(interaction_model)
+```
+
+As we know, each coefficient represents the change in the outcome variable (satisfaction) associated with a one-unit change in the corresponding predictor variable, while holding other variables constant. The coefficients now represent not only the main effects of `cenlevel` and each level of `hospital`, but also the interaction effects between them. The interactions can capture more complex relationships between `cenlevel` and `hospital`, which may lead to a better model fit if there are significant interaction effects present in the data. In comparing the outputs of both models, it becomes evident that they offer distinct perspectives on the relationship between hospital satisfaction and the predictors. 
+
+The model without interaction, employing a straightforward linear regression approach, provides clear coefficients for each predictor. Here, as we know, `cenlevel` and `hospital` are treated as independent factors influencing satisfaction. The coefficients indicate the extent of the impact each predictor has on satisfaction levels. `Cenlevel` and `hospital` coefficients of $0.5$ and $0.4$, respectively, suggest that increases in either variable correspond to higher levels of satisfaction.
+
+On the other hand, the model with interaction introduces an interaction term alongside the main effects of `cenlevel` and `hospital.` This addition captures the potential interplay between the two predictors, offering a more nuanced understanding of their combined influence on satisfaction. The coefficients for `cenlevel` and `hospital` in this model remain similar to the previous one, indicating their individual impacts on satisfaction. However, the interaction term's coefficient of $0.1$ suggests that the relationship between `cenlevel` and `satis` may change based on the level of `hospital`, and vice versa.
+
+In terms of evaluation, the model without interaction's simplicity offers ease of interpretation with clear coefficients for each predictor. This straightforwardness makes it suitable for quick insights into the independent effects of `cenlevel` and `hospital` on satisfaction. However, the last model's inclusion of the interaction term provides a more comprehensive analysis. By considering how the relationship between `cenlevel` and `satis` might vary with different levels of `hospital`, and vice versa, the last model offers valuable insights for tailored interventions or policies aimed at improving satisfaction levels.
+
+Considering these aspects, while both models have their strengths, the last one emerges as the preferred choice for a deeper understanding of the factors influencing hospital satisfaction. Its incorporation of interaction effects enriches the analysis, highlighting potential complexities in the relationship between predictors and satisfaction levels. Thus, the model with interaction's nuanced approach makes it the more suitable option for guiding informed decisions aimed at enhancing overall satisfaction in hospital settings.
+
+### Example from the Longitudinal data and repeated measurements section.
+
+Thyroxin is a thyroid hormone typically applied in hypothyroidism, and Thiouracil is a drug that suppresses the generation of Thyroxin. We consider the study of body weights of 27 rats. Each rat was randomly assigned to one of three
+treatments with sample sizes 10, 7, and 10, respectively. The first group was kept as a control, while
+the second and third groups had Thyroxin and Thiouracil added to their drinking water, respectively.
+The weight (in grams) of each rat was recorded at baseline and subsequent four weeks.
+
+```{r, warnin = FALSE}
+library(faraway)
+head(ratdrink)
+ratdrink = ratdrink
+```
+
+We create a plot with the `ratdrink` dataset. The plot displays the weights of rats over time (weeks) with different treatments (control, Thyroxin, and Thiouracil) represented by color and shape.
+
+```{r}
+library(ggplot2)
+ggplot(ratdrink, aes(y = wt, x = weeks, color = treat )) +
+geom_point(aes(shape = treat)) + geom_line(aes(group = subject))
+```
+
+### Bayesian approach for rat drink example
+
+```{r, message = FALSE, warning = FALSE}
+# Fit the Bayesian model using stan_lmer()
+ bayesian_model <- brm(wt ~ treat + weeks + (1 || subject),
+                           data = ratdrink,
+                            family = gaussian(),
+                            prior = c(prior(normal(0, 10), class = Intercept),
+                                      prior(normal(0, 10), class = b)),
+                            cores = 4, iter = 2000)  # Adjust the number of cores as needed
+
+```
+
+```{r}
+summary(bayesian_model)
+```
+
+We can see that the intercept is estimated to be $54.66$ grams, this indicates the average weight of the control with fixed effects (driniking water). Also, we can see that the estimated effect of Thiouracil treatment (`treatthiouracil`) on weight is estimated to be approximately $-11.51$ grams, this suggests that rats treated with Thiouracil tend to weight $11.51$ grams less than the ones in the control group in the same week. On the other hand, the estimated effect of Thyroxine treatment (`treatthyroxine`) on weight is close to zero ($1.22$ grams), this suggests that Thyroxine treatment may not have a significant effect on weight compared to the control group, rats treated with Thyroxine are only $1.22$ grams heavier than those in the control group in the same week. 
+
+Moreover, the coefficient for `weeks` is estimated to be $23.08$ grams, this indicates that, on average, rats gain approximately $23.08$ grams in weight each week over the four-week period of the study.
+
+In addition, the random intercepts for each subject (`subject`) capture individual variability in weight that is not explained by the fixed effects in the model. These random intercepts have varying means and standard deviations across subjects, reflecting differences in baseline weight and response to treatment among individual rats. The intercept of each rat is the sum of the estimated intercept of the model and its random intercept. We can see that the intercept for each rat varies because of this random effect.
+
+```{r}
+coef(bayesian_model)$subject[1:27]
+```
+
+Furthermore, the model appears to have converged well, as indicated by the Rhat values close to $1$, which indicate convergence of the Markov chains. Also, effective sample size measures (Bulk_ESS and Tail_ESS) are provided for each parameter.
+
+In summary, the Bayesian linear mixed-effects model provided us with insights into the effects of treatment and time on rat weight while accounting for individual variability. However, further interpretation and decision-making should consider the context of the study and potential limitations of the model.
+
+Overall, the model suggests that `weeks` has a significant positive effect on weight, while `treatthiouracil` has a significant negative effect. The random intercepts capture additional variability in weight among subjects.
+
+Now, the fitted lines are:
+
+```{r}
+g1 = ggplot(ratdrink, aes(y = wt, x = weeks, color = treat)) +
+geom_point(aes(shape = treat)) +
+geom_line(aes(group = subject))
+
+g1 + geom_abline(intercept = 54.45, slope = 23.1, color = 2, size = 1.2) +
+geom_abline(intercept = 54.45-11.45, slope = 23.1, color = 3, size = 1.2) +
+geom_abline(intercept = 54.45+1.22, slope = 23.1, color = 4, size = 1.2)
+```
+
+Here the solid lines correspond to the estimated population lines for each group. The lines for the control and thyroxine groups are almost identical, and the one for thiouracil is below. All in all, assuming that the rate of increase is the same. We now test if the random effects are needed.
+
+```{r}
+# Fit the null model without random effects
+bayesian_model_null <- stan_glm(wt ~ treat + weeks, data = ratdrink)
+
+# Compute BIC for the null model
+bic_null <- BIC(bayesian_model_null)
+
+# Compute BIC for the original model with random effects
+bic_with_re <- BIC(bayesian_model)
+
+# Compute the test statistic (difference in BIC)
+test_statistic <- bic_null - bic_with_re
+
+# Degrees of freedom for the chi-square distribution
+df <- 1  # Difference in degrees of freedom between the two models
+
+# Calculate the p-value using the chi-square distribution
+p_value <- pchisq(test_statistic, df = df, lower.tail = FALSE)
+
+# Display the p-value
+print(p_value)
+```
+
+Since our p-value is $0$, the random effect is necessary. We knom wanna make a better model and, for that, we include a random effect in the slope so each rat may have  a different growth rate.
+
+```{r, warning = FALSE, message = FALSE}
+# Load the brms package
+library(brms)
+
+# Fit the Bayesian model
+bayesian_model_lmm2 <- brm(wt ~ treat + weeks + (weeks || subject),
+                           data = ratdrink,
+                           family = gaussian(),
+                           prior = c(prior(normal(0, 10), class = Intercept),
+                                     prior(normal(0, 10), class = b)),
+                           cores = 4, iter = 3000)  # Adjust the number of cores as needed
+```
+
+```{r, warning = FALSE}
+# Summarize the model
+summary(bayesian_model_lmm2)
+```
+
+This summary provides information about the estimates of fixed effects, random effects, and other distributional parameters. Firstly, the intercept estimate is $51.63$, with a $95%$ credible interval from $47.22$ to $55.96$. This represents the expected weight of rats at baseline (week 0) when all the other predictor (`treatment` and `weeks`) are $0$. Secondly, the estimate for the effect of `treatthiouracil` is $3.94$, with a $95%$ credible interval from $-1.76$ to $10.02$. This suggest that rats treated with Thiouracil have, on average, a higher higher weight by $3.94$ compared to the control group in the same week. Thirdly, the estimate for the effect of `treatthyroxine` is $-0.42$, with a $95%$ credible interval from $-7.18$ to $5.67$. This suggests that rats treated with thyroxine have, on average, a slightly lower weight by $0.42$ compared to the control group in the same week. Finally, the estimate for the effect of `weeks` is $13.38$, with a $95%$ credible interval from $-2.94$ to $21.93$. this shows that for each additional week, rats, on average, gain approximately $13.38$ grams in weight, holding other variables constant.
+
+Moreover, we can see that the estimated standard deviation of the random intercepts across different subjects is $6.32$. This indicates the variability in baseline weight among different rats that is not explained by the fixed effects. The $95%$ credible interval for this standard deviation is approximately ($3.96$, $9.29$). Additionally, the estimated standard deviation of the random slopes for `weeks` within each subject is $12.61$. This indicates the variability in the rate of change of weight over time among different rats that is not explained by the fixed effects. The $95%$ credible interval for this standard deviation is approximately ($5.48$, $27.19$). Furthermore, the estimated standard deviation of the residual errors (unexplained variability) is $4.41$. This quantifies the variability in weight that is not explained by the fixed and random effects.
+
+Finally, the Rhat values for all parameters are close to $1$, indicating good convergence. Also, effective sample sizes (Bulk_ESS and Tail_ESS) vary across parameters, with some parameters having relatively lower effective sample sizes. This suggests that more samples may be needed for those parameters to obtain more reliable estimates.
+
+Overall, the model suggests that treatment with Thiouracil may be associated with higher weight in rats compared to the control group, while treatment with Thyroxine may not have a statistically significant effect on weight. This is the contrary as in the previous model, so we can see how important is to make the model more complex to see if it is a better fit. Additionally, the weight tends to increase over time, as indicated by the positive coefficient for `weeks`. The variability in weight among rats, both at baseline and in the rate of change over time, is captured by the random effects.
+
+However, we want to improve the model by not assuming independence between the different slopes (because with it it got worse) and the intercepts. We fit a new model.
+
+```{r, warning = FALSE}
+# Fit the Bayesian mixed-effects model
+bayesian_model_lmm3 <- brm(wt ~ treat + weeks + (weeks | subject),
+                           data = ratdrink,
+                           family = gaussian(),
+                           prior = c(prior(normal(0, 10), class = Intercept),
+                                     prior(normal(0, 10), class = b)),
+                           cores = 4, iter = 2000)  # Adjust the number of cores and iterations as needed
+```
+
+```{r, warning = FALSE}
+summary(bayesian_model_lmm3)
+```
+
+We can see that the estimated standard deviation of the random intercepts among different subjects is $14.22$, indicating substantial variability in baseline weight among subjects. Also, the estimated standard deviation of the random slopes for the effect of `weeks` among different subjects is $20.30$, indicating substantial variability in the rate of change of weight over time among subjects. In addition, the estimated correlation between random intercepts and slopes is $0.68$, suggesting a moderate positive correlation. This implies that subjects with higher baseline weights tend to have steeper slopes (or vice versa), although this relationship might vary across subjects.
+
+Moreover, the estimated baseline weight for the control group when `weeks` is $0$ is $40.18$ grams. The estimated difference in weight between the Thiouracil group and the control group, controlling for the effect of `weeks`, is $8.54$ grams. The estimated difference in weight between the Thyroxine group and the control group, controlling for the effect of `weeks`, is $-1.56$ grams. However, the confidence interval ($-9.52$, $5.84$) includes $0$, indicating that this difference is not statistically significant. In addition, the estimated change in weight per unit increase in weeks, controlling for treatment effects, is $4.77$ grams.
+
+Furthermore, the estimated standard deviation of the residual errors is $4.41$, indicating the typical variability in weight that is not explained by the fixed and random effects.
+
+Overall, the model seems to have converged well, as indicated by the Rhat values close to $1$ and sufficient effective sample sizes (Bulk_ESS and Tail_ESS) for most parameters. However, we want to improve more this model and what we have left to do is not suppose that the lines are parallel, in other words, include interaction between treatment and time.
+
+```{r, warning = FALSE}
+# Fit the Bayesian mixed-effects model
+bayesian_model_lmm3 <- brm(wt ~ treat * weeks + (weeks | subject),
+                           data = ratdrink,
+                           family = gaussian(),
+                           prior = c(prior(normal(0, 10), class = Intercept),
+                                     prior(normal(0, 10), class = b)),
+                           cores = 4, iter = 2000)  # Adjust the number of cores and iterations as needed
+```
+
+```{r, warning = FALSE}
+summary(bayesian_model_lmm3)
+```
+
+Firstly, we see that the intercept, representing the expected weight at baseline for the reference group (control group) when weeks is $0$, is estimated to be $51.04$ with a $95%$ credible interval ranging from $40.34$ to $56.10$. Secondly, the coefficient for the `treatthiouracil` variable indicates the change in weight for the thiouracil treatment group compared to the control group when weeks is $0$ is estimated to be $4.39$ with a $95%$ CI ranging from $-1.88$ to $11.30$. Thirdly, the coefficient for the `treatthyroxine` variable indicates the change in weight for the thyroxine treatment group compared to the control group when weeks is $0$ is estimated to be $-0.92$ with a $95%$ CI ranging from $-7.79$ to $5.83$. Fourthly, the coefficient for the `weeks` variable represents the average change in weight per unit increase in weeks for the control group is estimated to be $23.75$ with a $95%$ CI ranging from $12.71$ to $27.26$. Finallly, the interaction terms `treatthiouracil:weeks` and `treatthyroxine:weeks` represent the additional change in weight per unit increase in weeks for the thiouracil and thyroxine treatment groups, respectively. They are estimated to be $-8.29$ and $1.38$, respectively.
+
+Furthermore, for the random intercept and random slope (`weeks`), the standard deviations are estimated to be $6.61$ and $4.86$, respectively, indicating the variability in intercepts and slopes across different subjects. In addition, the correlation between the random intercept and random slope is estimated to be $0.05$ suggesting a weak positive correlation between the individual baseline weight and their rate of change over time.
+
+Finally, the residual standard deviation (`sigma`) is estimated to be $4.44$, indicating the variability in weight not accounted for by the fixed and random effects.
+
+Overall, the model suggests that both treatment groups may have different weight trajectories over time compared to the control group, as indicated by the significant interaction terms. The estimated coefficients provide insights into the direction and magnitude of these differences, while the random effects capture the variability in individual weight trajectories.
