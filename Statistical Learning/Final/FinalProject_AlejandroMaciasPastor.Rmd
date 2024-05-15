@@ -1,0 +1,1374 @@
+---
+title: "Classification through Machine Learning"
+author: "Alejandro Macías Pastor"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+ç# 1. Introduction
+
+The data is related with direct marketing campaigns of a Portuguese banking institution. The marketing campaigns were based on phone calls. Often, more than one contact to the same client was required, in order to access if the product (bank term deposit) would be ('yes') or not ('no') subscribed. It is available at the [UC Irvine Machine Learning Repository](https://archive.ics.uci.edu/dataset/222/bank+marketing).
+
+The main objective of studying this dataset is to successfully predict whether the client will subscribe a term deposit or not. The following list contains all the variables found in the dataset, along with a brief description:
+
+-   **age**: age of the client.
+
+-   **job**: type of job of the client ( 'admin.', 'blue-collar', 'entrepreneur', 'housemaid', 'management', 'retired', 'self-employed', 'services', 'student', 'technician', 'unemployed', 'unknown').
+
+-   **marital**: marital status ('divorced','married','single','unknown'; note: 'divorced' means divorced or widowed).
+
+-   **education**: education level ('basic.4y', 'basic.6y', 'basic.9y', 'high.school', 'illiterate', 'professional.course', 'university.degree', 'unknown').
+
+-   **default**: whether the client has any credit in default or not.
+
+-   **balance**: the average yearly balance of the client (in euros).
+
+-   **housing**: whether the client has a housing loan or not.
+
+-   **loan**: whether the client has a personal loan or not.
+
+-   **avg_glucose_level**: average glucose level in blood.
+
+-   **day**: day of the month when last contact happened.
+
+-   **month**: month of the year when last contact happened.
+
+-   **duration**: duration of last phone call (in seconds).
+
+-   **campaign**: number of contacts performed during this campaign and for this client (including last contact).
+
+-   **pdays**: number of days that passed by after the client was last contacted from a previous campaign (-1 means client was not previously contacted).
+
+-   **previous**: number of contacts performed before this campaign and for this client.
+
+-   **poutcome**: outcome of the previous marketing campaign ('failure','nonexistent','success').
+
+-   **y**: whether the client subscribed a term deposit or not.
+
+The predictive power of several different Macine Learning algorithms will be studied along this report.
+
+```{r,warning=FALSE,message=FALSE}
+library(tidyverse)
+library(skimr)
+library(forcats)
+library(VIM)
+library(GGally)
+library(MASS)
+library(caret)
+library(randomForest)
+library(gbm)
+library(neuralnet)
+library(pdp)
+library(mice)
+library(ggmosaic)
+library(knitr)
+```
+
+```{r}
+data = read.csv('bank-full.csv', sep=";", as.is=FALSE, na.strings="unknown")
+set.seed(1234)
+```
+
+# 2. Data Preprocessing
+
+Before creating any models, it is important to study in detail all the observations and variables, in order to both gain some insight and preprocess when needed to avoid later problems.
+
+## 2.1. Feature engineering
+
+We can start by checking that the data has been loaded correctly and by making some necessary modifications:
+
+```{r}
+sapply(data,class)
+```
+
+For a start, all the variables seem to be of the right class.
+
+As can be gathered from the summary of the variables in the introduction, there are several categorical variables which possess a level defined as "unknown". This is nothing but missing values in the data, and so when loading the dataset they have been read as such. However, there among this "unknown" missing values, there are some that have to be modified. For example, when paying attention we see that the `pdays` variable takes the value -1 when the client had never been contacted until the current campaign. We can check whether this might be related to the missing values in `poutcome`, which contains the outcome of the last contact:
+
+```{r}
+nrow(data[data$pdays==-1 & is.na(data$poutcome),])
+```
+
+All of the cases of missing values of the variable `poutcome` where `pdays` takes the value -1 should actually take the level 'nonexistent':
+
+```{r}
+levels(data$poutcome) = as.factor(c("failure", "nonexistent","success"))
+data$poutcome[data$pdays==-1] = as.factor("nonexistent")
+```
+
+Once again with a close relation to the variable `pdays`, we have the variables `day` and `month`, which also contain information about the last contact. These two variables should also contain a way to represent those clients for which no contact had happened before just as `pdays` does. To deal with this, we will introduce a new category within the `month` variable which will be 'never' and we will set the `day` variable of those observations to 0, which, although does not make sense when considering the actual meaning of the variable, will negate the effect of the variable for those observations when it comes to prediction:
+
+```{r}
+levels(data$month) = as.factor(c(as.character(levels(data$month)), "never"))
+data$month[data$pdays==-1] = as.factor('never')
+
+data$day[data$pdays==-1] = 0
+```
+
+Finally, turning our attention now to the variable `pdays`, we see that it is numeric but takes the value -1 for clients that had never been contacted before. Obviously it does not make sense for this variable to take negative values, so we will modify these cases to missing values to be imputed accordingly later:
+
+```{r}
+data$pdays[data$pdays==-1] = NA
+```
+
+## 2.2. Imputation of missing values
+
+Now, it is time to deal with the missing values that are in the dataset or have been artificially introduced in the earlier section.
+
+```{r, message=FALSE}
+aggr(data, numbers = TRUE, sortVars = TRUE, labels = names(data),
+     cex.axis = .5, gap = 1, ylab= c('Missing data','Pattern'))
+```
+
+```{r}
+print("Count of missing values by column:")
+sapply(data, function(x) sum(is.na(x)))
+```
+
+Before doing any imputations though, the train-test partition should be made in order to avoid any data leakage.
+
+```{r}
+set.seed(1234)
+index_part <- createDataPartition(data$y, p = 0.2, list = FALSE)  # 20% for training
+train <- data[ index_part,]
+test <- data[-index_part,]
+nrow(train)
+nrow(test)
+```
+
+There is a huge number of missing values in the `pdays` variable, corresponding to those customers that had never been contacted before. This is problematic since it is difficult to impute 80% of a column while also trying to maintain the information about the calls to the customers. To deal with this, imputing with the median of the column has been considered best, since it will have the least effect on the general statistics of the column:
+
+```{r}
+train$pdays[is.na(train$pdays)] = median(na.omit(train$pdays))
+test$pdays[is.na(test$pdays)] = median(na.omit(train$pdays))
+```
+
+For the rest of the missing values, among which the `contact` variable contains the biggest amount, Multivariate Imputations by Chained Equations (MICE) from the `mice` library, will be used, specifically its method based on Random Forest:
+
+```{r, warning=FALSE, cache=TRUE}
+train.imp = mice(train, m=2, maxit=4, method = "rf" )
+train = complete(train.imp,1)
+
+test.imp = mice.mids(train.imp, newdata=test)
+test = complete(test.imp,1)
+```
+
+Let us check that all the missing values have been imputed correctly:
+
+```{r}
+anyNA(train)
+anyNA(test)
+```
+
+## 2.3. Exploratory Data Analysis
+
+We can now dive deeper into exploring each unique variable of the training set.
+
+### `y`: balanced classes?
+
+Firstly, we can check whether the classes in the response variable are balanced.
+
+```{r}
+plot(train$y, main='Balance (or lack thereof) of the data')
+prop.table(table(train$y))
+```
+As we can see, the classes are far from balanced, since the positive response only makes up about a 12% of the total observations, which might affect the training of the different models. Luckily there are several ways to deal with this through resampling (downsampling, upsampling, or combinations of both), some even incorporated into the `caret` library as we will see later on.
+
+
+### `age`
+```{r}
+ggplot(train, aes(x=age, color=y, fill=y)) +
+  geom_density(alpha=0.1) +
+  labs(x="Age")
+```
+When studying the age of those clients who place a deposit and those who do not, we notice that customers who are older (approximately over 60 years old), are much more likely to place it than younger clients.
+
+### `job`
+
+```{r,warning=FALSE}
+ggplot(train) +
+  geom_mosaic(aes(product(job),fill=y)) +
+  labs(x='Type of occupation')
+```
+The employment of the clients does seem to influence their decision-making around subscribing a term deposit: students and retired clients seem to be the type of workers who are more likely to subscribe, as opposed to blue-collar workers or those working in the services industry.
+
+### `marital`
+
+```{r}
+ggplot(train) +
+  geom_mosaic(aes(product(marital),fill=y)) +
+  labs(x='Marital status')
+```
+The marital status of the clients also seems to affect the subscription of term deposits, with single clients being more likely to those who are or have ever been married.
+
+### `education`
+
+```{r}
+ggplot(train) +
+  geom_mosaic(aes(product(education),fill=y)) +
+  labs(x='Education level')
+```
+At first sight, the trend when it comes to the education level of the clients and their likeliness of subscribing to a deposit indicates that the higher level of education achieved, the bigger the chance of them subscribing a term deposit.
+
+### `default`
+
+```{r}
+ggplot(train) +
+  geom_mosaic(aes(product(default),fill=y)) +
+  labs(x='Does the client have credit in default?')
+```
+Unsurprisingly, the plot above shows that clients who do not have credit in default are more likely to subscribe a term deposit.
+
+### `balance`
+
+```{r,warning=FALSE,message=FALSE}
+ggplot(train, aes(x=balance, color=y, fill=y)) +
+  geom_histogram() +
+  labs(x="Average yearly balance")
+```
+Interestingly, among average yearly balances lower than about 20000€, the balance amount does not seem to influence too much the subscription of a term deposit. Much less frequent clients with higher balances seems however likely to accept.
+
+### `housing`
+
+```{r}
+ggplot(train) +
+  geom_mosaic(aes(product(housing),fill=y)) +
+  labs(x='Does the client have a housing loan?')
+```
+In a not-very-surprising manner, 
+
+### `loan`
+
+```{r}
+ggplot(train) +
+  geom_mosaic(aes(product(loan),fill=y)) +
+  labs(x='Does the client have a personal loan?')
+```
+
+Just as in the case of housing loans, having personal loans seems to deter clients from subcribing a term deposit.
+
+
+### `contact`
+
+```{r}
+ggplot(train) + 
+  geom_mosaic(aes(product(contact),fill=y)) +
+  labs(x='Type of contact communication')
+```
+What can be gathered from this plot is that the type of communication used to contact the client does not influence at all their decision.
+
+### `day`
+
+When studying the variable `day` we have to remember that we have set it to 0 for those clients for which the last contact had never happened, and so this observations are removed from the density estimation.
+
+```{r}
+ggplot(train[train$day!=0,], aes(x=day, color=y, fill=y)) +
+  geom_density(alpha=0.1) +
+  labs(x="Day of the month of last contact")
+```
+Although there does not seem to be a very clear pattern when it comes to the decisions of the clients who had been contacted before related to the day of the month of last contact, positive responses seem to prevail around the last third of the month, whereas the very start and middle of the month seems to be bad times to contact customers. The last days of the month having more positive responses could be related to the clients realising that they have some money left and wanting to invest it.
+
+### `month`
+
+```{r}
+ggplot(train) +
+  geom_mosaic(aes(product(month),fill=y)) +
+  labs(x='Month')
+```
+As can be seen from the mosaic plot, there are certain months of last contact for which the new contact seems to be much more successful, such as February, May, or June. On the opposite end, months of last contact such as August or September seem to lead to similar success rates as the very first contact with a client.
+
+### `duration`
+
+```{r}
+ggplot(train, aes(x=duration, color=y, fill=y)) +
+  geom_density(alpha=0.1) +
+  labs(x="Duration of the last contact (seconds)")
+```
+The interpretation of the grouped density of the variable `duration` is clearer than any seen before: clients that hold longer conversation are much more likely to be actually interested in the term deposit that those who end the contact early on. At the very extreme of this, we note the fact that if the duration of contact is 0, the client will obviously not subscribe to a term deposit due to the contact.
+
+This variable brings a dilemma: it is expected to highly affect the response, yet the duration of the call is not known before it is performed, and at the end of the call the duration is known but so is the response. If a realistic predictive model were needed, discarding the `duration` variable should be considered. However, for benchmark purposes it will be included in this project.
+
+### `campaign`
+
+```{r, message=FALSE}
+ggplot(train, aes(x=campaign, y=after_stat(density), color=y, fill=y)) +
+  geom_histogram() +
+  labs(x="Number of contacts performed during this campaign")
+```
+A higher number of contacts might be expected to lead to positive response values, although the very small frequencies of these values make it difficult to assert this with confidence. 
+
+### `pdays`
+
+```{r}
+ggplot(train[train$pdays!=193,], aes(x=pdays, color=y, fill=y)) +
+  geom_density(alpha=0.1) +
+  labs(x="Number of days since last contact")
+```
+In a similar manner to the variable immediately above, the greatest success of the campaign in terms as far as the number of days since last contact is concerned seems to come from the ends of the spectrum: either it had not been too long since the last contact (less than about 8 months) or it had been a long time (well over a year). There seems to be a region of very high probably of rejection between 250 and 400 days.
+
+### `previous`
+
+```{r, message=FALSE}
+ggplot(train, aes(x=previous, y=after_stat(density), color=y, fill=y)) +
+  geom_histogram() +
+  labs(x="Number of contacts before this campaign")
+```
+When it comes to the number of times the clients had been contacted before the current campaign, the most success seems to come from clients
+
+### `poutcome`
+
+```{r}
+ggplot(train) +
+  geom_mosaic(aes(product(poutcome),fill=y)) +
+  labs(main='')
+```
+
+The take away from this plot is clear: clients that were interested in earlier campaigns, to the point of participating in them, are much more likely to participate once again in a campaign from the bank. Another interesting detail to note is that clients that were contacted in earlier campaign but were not convinced by them seem to be slightly more likely to participate in this new one that clients who are being contacted for the first time.
+
+### Correlation
+
+```{r}
+ggcorr(train)
+```
+
+
+# 3. Machine Learning algorithms for classification
+
+Several Machine Learning algorithm will be tested against a benchmark model based on statistical learning. In order to better estimate the performance of the different models, 5-fold cross validation will be used. As seen earlier, the classes of the response variable `y` were highly unbalanced. To deal with this, the `caret::train()` function will internally do the necessary upsampling. Furthermore, within this same function cost-sensitive learning will also be implemented, through means of the `EconomicProfit()` function defined below, which will be used as the objective function when it comes to model training and hyperparameter tuning.
+
+To define this function, the following costs have been devised, whose figures have been hypothesized for the sake of this exercise:
+
+
+| Prediction/Reference |     no |     yes |
+|----------------------|-------:|--------:|
+| predicted no         |      0 |    -0.5 |
+| predicted yes        |  -0.25 |       1 |
+
+Before even glancing at the numbers, it is easy to tell apart the most costly mistake: predicting that a client will not subscribe a term deposit when in fact they would (that is, predicting 'no' when reference is 'yes'), since this would entail losing all possible profits that could have been obtained through the client's term deposit. A much less costly mistake would be to predict that some client will subscribe when in fact they will not, as this would only entail the costs of unsuccessfully contacting the client. A successful prediction of interested clients would generate a profit from their term deposit (and so no cost), whereas a successful prediction of uninterested clients would entail no costs at all.
+
+```{r}
+profit.unit <- c(0, -0.25, -0.5, 1)
+
+EconomicProfit <- function(data, lev = NULL, model = NULL)
+{
+  y.pred = data$pred 
+  y.true = data$obs
+  CM = confusionMatrix(y.pred, y.true)$table
+  out = sum(profit.unit*CM)/sum(CM)
+  names(out) <- c("EconomicProfit")
+  out
+}
+```
+
+
+```{r}
+ctrl <- trainControl(method = "cv", number = 5,
+                     classProbs = TRUE, 
+                     summaryFunction = EconomicProfit,
+                     verboseIter=F,
+                     sampling="up")
+ctrl.thresh <- trainControl(method = "none", number = 1,
+                     classProbs = TRUE, 
+                     summaryFunction = EconomicProfit,
+                     verboseIter=F,
+                     sampling="up")
+```
+
+## 3.1 Benchmark: Logistic regression
+
+Since our response variable only has two different classes, logistic regression is an acceptable statistical learning model to use as benchmark against the different Machine Learning models. 
+
+### 3.1.1. Hyperparameter tuning
+
+Since our dataset has quite a few variables, it is convenient to use penalized logistic regression.
+
+```{r,warning=FALSE,cache=TRUE}
+lrFit <- train(y ~ ., 
+               method = "glmnet",
+               tuneGrid = expand.grid(alpha=seq(0, 1, 0.1), lambda=seq(0,.1,0.02)),
+               metric = "EconomicProfit",
+               data = train,
+               preProcess = c("center", "scale"),
+               trControl = ctrl)
+```
+
+
+The optimal parameters have been found to be:
+```{r}
+kable(lrFit$bestTune)
+```
+
+
+```{r,cache=TRUE,warning=FALSE}
+lrPred = predict(lrFit, test)
+
+confusionMatrix(lrPred,test$y)
+
+EconomicProfit(data = data.frame(pred=lrPred, obs=test$y))
+```
+### 3.1.2. Threshold optimisation
+
+As has already been mentioned, there are some misclassifications that incur higher costs than others. The objective of cost-sensitive learning is to maximize the profit per client. By modifying the threshold for which a client is considered to be likely to be interested, the profit per client can be further improved. In general, this implies setting a more conservative threshold, that is, 
+
+```{r,cache=TRUE,warning=FALSE}
+niters = 10
+profit.i = matrix(NA, nrow = niters, ncol = length(seq(0.5,0.95,0.05)))
+
+j <- 0
+for (threshold in seq(0.5,0.95,0.05)){
+  j <- j + 1
+  cat(j)
+  for(i in 1:niters){
+    
+    d <- createDataPartition(train$y, p = 0.8, list = FALSE)
+
+    
+    train.cs <- train[d,]
+    test.cs  <- train[-d,]
+    
+    lrFit.cs <- train(y ~ ., data=train.cs, method = "glmnet",
+                   tuneGrid = lrFit$bestTune,
+                   preProcess = c("center", "scale"),
+                   metric='EconomicProfit',
+                   trControl = ctrl.thresh)
+    
+    lrProb = predict(lrFit.cs, test.cs, type="prob")
+    lrPred = rep("yes", nrow(test.cs))
+    lrPred[which(lrProb[,1] > threshold)] = "no"
+    
+    profit.i[i,j] <- EconomicProfit(data = data.frame(pred=factor(lrPred), obs=test.cs$y))
+    
+  }
+}
+
+# Threshold optimization:
+boxplot(profit.i, main = "Threshold selection",
+        ylab = "Relative profit",
+        xlab = "Threshold",
+        names = seq(0.5,0.95,0.05),col="royalblue2",las=2)
+
+apply(profit.i, 2, median)
+```
+
+```{r,cache=TRUE,warning=FALSE}
+lrProb=predict(lrFit,test,type="prob")
+
+threshold = 0.55
+lrPred = rep("yes", nrow(test))
+lrPred[which(lrProb[,1] > threshold)] = "no"
+
+confusionMatrix(factor(lrPred), test$y)
+
+economic.profit.lr <- EconomicProfit(data=data.frame(pred=factor(lrPred), obs=test$y))
+economic.profit.lr
+```
+As we can see, after modifying the threshold, the accuracy has been slightly reduced but so has the most costly misclassification, as was intended. The relative profit has also been slightly improved.
+
+### 3.1.3. Variable importance
+
+Finally, as part of the analysis of our benchmark model, it might be interesting to take a look at the importance of the different variable within the context of their effect on the response variable.
+
+```{r}
+lr.imp <- varImp(lrFit, scale = F)
+plot(lr.imp, scales = list(y = list(cex = .95)))
+```
+As we can see from the importance plot above, and as was hypothesized during the exploratory data analysis, the duration of the contact is by far the most important variable, followed by the outcome of the last contact and finally by whether the client has a housing loan or not. 
+
+We can plot the two most important variables to see more exactly their relation with the response variable:
+
+
+```{r,cache=TRUE}
+partial(lrFit, pred.var = "duration", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+partial(lrFit, pred.var = "poutcome", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+```
+The shape of the relation of the response with respect to `duration` is the characteristic shape of a continuous variable in logistic regression: the logit function. Essentially, it grows close to linearly from 0 to around 1000, after which it almost plateaus and approximates probability 1. This means that the chances of the client subscribing a term deposit is proportional to the duration of the contact with them up until about 17 minutes, at which points it is essentially guaranteed that they will subscribe. This should not be surprising, since if a client has paid attention to the offer for that long, it definitely means they would be interested. 
+As far as the variable `poutcome` is concerned, its relationship with respect to the response shows that if the client liked the last campaign, they are more than twice as likely to subscribe a new term deposit than if they did not or if they had not been contacted before.
+
+## 3.2 k-Nearest Neighbors
+
+The first Machine Learning algorithm that will be used to predict the classification is k-Nearest Neighbors. This algorithm selects the class of the observation by calculating its distance to all the other observations and selecting the mode among some of its closest neighbors.
+
+### 3.2.1 Hyperparameter turning
+
+The main hyperparameter of this method is the number of neighbors that it considers when calculating the mode.
+
+```{r,cache=TRUE,warning=FALSE}
+knnFit <- train(y ~ ., 
+                method = "knn", 
+                data = train,
+                tuneGrid = expand.grid(k=seq(3,11,2)),
+                metric = "EconomicProfit",
+                trControl = ctrl)
+print(knnFit)
+```
+The optimal hyperparameter configuration is:
+
+```{r echo=FALSE}
+kable(knnFit$bestTune)
+```
+
+
+```{r,cache=TRUE}
+knnPred = predict(knnFit, test)
+
+confusionMatrix(knnPred,test$y)
+
+EconomicProfit(data = data.frame(pred=knnPred, obs=test$y))
+```
+Using the default threshold, this method has achieved a much lower accuracy and relative profit than logistic regression.
+
+### 3.2.2 Threshold optimization
+
+Let us try to improve the relative profit, at the cost of reducing the accuracy, through threshold optimization.
+
+```{r,cache=TRUE,warning=FALSE}
+niters = 10
+profit.i = matrix(NA, nrow = niters, ncol = 10)
+
+j <- 0
+for (threshold in seq(0.05,0.5,0.05)){
+  j <- j + 1
+  cat(j)
+  for(i in 1:niters){
+    
+    # partition data intro training (80%) and testing sets (20%)
+    d <- createDataPartition(train$y, p = 0.8, list = FALSE)
+    # select training sample
+    
+    train.cs = train[d,]
+    test.cs  = train[-d,]
+    
+    knnFit.cs = train(y ~ ., data=train.cs, method = "knn",
+                      tuneGrid = knnFit$bestTune, 
+                      preProcess = c("center", "scale"),
+                      trControl = ctrl.thresh,
+                      metric='EconomicProfit')
+    
+    knnProb = predict(knnFit.cs, test.cs, type="prob")
+    knnPred = rep("no", nrow(test.cs))
+    knnPred[which(knnProb[,2] > threshold)] = "yes"
+    
+    
+    profit.i[i,j] <- EconomicProfit(data = data.frame(pred=factor(knnPred), obs=test.cs$y))
+    
+  }
+}
+
+# Threshold optimization:
+boxplot(profit.i, main = "Threshold selection",
+        ylab = "Relative profit",
+        xlab = "Threshold",
+        names = seq(0.05,0.5,0.05),col="royalblue2",las=2)
+
+apply(profit.i, 2, median)
+```
+We can see that the optimal profit comes from setting a threshold of 0.3, and so this is the threshold that will be used in our final predictions with k-Nearest Neighbors
+
+```{r,cache=TRUE}
+knnProb=predict(knnFit,test,type="prob")
+
+threshold = 0.2
+knnPred = rep("no", nrow(test))
+knnPred[which(knnProb[,2] > threshold)] = "yes"
+
+confusionMatrix(factor(knnPred), test$y)
+
+economic.profit.knn <- EconomicProfit(data=data.frame(pred=factor(knnPred), obs=test$y))
+economic.profit.knn
+
+```
+As we can see, the accuracy has slightly lowered but the relative profit has increased a lot relatively. Both, however, are still much lower than for the benchmark model, due to the quite small kappa value, that is, the big number of misclassifications. kNN is a good method when there is highly non-linear data of low dimension, and especially good when the data is related to locations. Data considered not being particularly under any of the last two assumptions might explain the very poor performance of this method.
+
+
+### 3.2.3 Variable importance
+
+Although Machine Lerning models tend to be somewhat obscure, especially when compared with statistical learning models, recent advancements have made it possible to obtain more explicit relations between the most important variables in a Machine Learning model and the response variable.
+
+```{r}
+knn.imp <- varImp(knnFit, scale = F)
+plot(knn.imp, scales = list(y = list(cex = .95)))
+```
+Exactly as before, the duration of the contact with the client is by far the most important variable, once again tailed by whether the client has a housing loan or not. After the both of them, and not too behind `previous` in terms of importance, is the balance of the client.
+
+```{r,cache=TRUE}
+partial(knnFit, pred.var = "duration", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+partial(knnFit, pred.var = "housing", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+```
+
+Although the context is similar to that of before, we can see differences with respect to the benchmark in the relation between the most important variables and the response. To start with, in the case of `housing`, kNN does not predict as much of a difference in the response when changing the categories of the second most important variable, although it does predict that clients with no housing loans are more likely to subscribe. As far as `duration` is concerned, kNN's relation between this variable and the response seems to resemble that of logistic regression, with a linear growth at the start and then a plateau, although it is not as smooth.
+
+## 3.3. Support Vector Machines
+
+The next Machine Learning algorithm used to classify is Support Vector Machines (SVM). This method attempts to find hyperplanes in high dimensional data to separate the observations into the corresponding groups, sometimes resorting even to transforming the data into higher dimensional spaces through the means of kernels.
+
+### 3.3.1. Hyperparameter tuning
+
+The main hyperparameters of this Machine Learning algorithm are the kernel, a constant knwon as $C$ that controls for overfitting or $\sigma$, which controls the influence or reach of the training samples.
+
+```{r,cache=TRUE,warning=FALSE,results='hide',message=FALSE}
+svmFit <- train(y ~., method = "svmRadial", 
+                data = train,
+                preProcess = c("center", "scale"),
+                tuneGrid = expand.grid(C = c(.25, .5, 1),
+                                      sigma = c(0.01,.05)),
+                metric = "EconomicProfit",
+                maximize=F,
+                trControl = ctrl,
+                verbosity=0)
+```
+
+The optimal hyperparameter configuration for this kernel has been found to be:
+```{r}
+kable(svmFit$bestTune)
+```
+
+
+```{r,cache=TRUE}
+svmPred = predict(svmFit, test)
+
+confusionMatrix(svmPred,test$y)
+
+EconomicProfit(data=data.frame(pred=svmPred, obs=test$y))
+```
+
+### 3.3.2. Threshold optimization
+
+Once again, we can attempt to improve the relative profit by optimizing with respect to the threshold.
+
+```{r,cache=TRUE,warning=FALSE}
+niters = 10
+profit.i = matrix(NA, nrow = niters, ncol = 10)
+
+j <- 0
+for (threshold in seq(0.05,0.5,0.05)){
+  j <- j + 1
+  cat(j)
+  for(i in 1:niters){
+    
+    # partition data intro training (75%) and testing sets (25%)
+    d <- createDataPartition(train$y, p = 0.8, list = FALSE)
+    # select training sample
+    
+    train.cs <- train[d,]
+    test.cs  <- train[-d,]
+    
+    svmFit.cs <- train(y ~ ., data=train.cs, method = "svmRadial",
+                       tuneGrid = svmFit$bestTune, 
+                       preProcess = c("center", "scale"),
+                       trControl = ctrl.thresh,
+                       metric='EconomicProfit')
+    
+    svmProb = predict(svmFit.cs, test.cs, type="prob")
+    svmPred = rep("no", nrow(test.cs))
+    svmPred[which(svmProb[,2] > threshold)] = "yes"
+    
+    
+    profit.i[i,j] <- EconomicProfit(data = data.frame(pred=factor(svmPred), obs=test.cs$y))
+    
+  }
+}
+
+# Threshold optimization:
+boxplot(profit.i, main = "Threshold selection",
+        ylab = "Relative profit",
+        xlab = "Threshold",
+        names = seq(0.05,0.5,0.05),col="royalblue2",las=2)
+
+apply(profit.i, 2, median)
+```
+
+```{r,cache=TRUE}
+svmProb=predict(svmFit,test,type="prob")
+
+threshold = 0.4
+svmPred = rep("no", nrow(test))
+svmPred[which(svmProb[,2] > threshold)] = "yes"
+
+confusionMatrix(factor(svmPred), test$y)
+
+economic.profit.svm <- EconomicProfit(data=data.frame(pred=factor(svmPred), obs=test$y))
+economic.profit.svm
+```
+This Machine Learning model has achieved great improvement when compared with kNN, yielding a relative profit 10 times higher, with accuracy and kappa values comparable to the ones from the benchmark model, although still lower. SVM is able to capture the non-linear relations within high-dimensional data better than kNN, and so it should not surprise that it achieves better results than said method.
+
+### 3.3.3. Variable importance
+
+Just like for kNN, the variable importance can be checked.
+
+```{r}
+svm.imp <- varImp(svmFit, scale = F)
+plot(svm.imp, scales = list(y = list(cex = .95)))
+```
+The variable that leads in importance once again happens to be `duration`, followed by `housing` and just slightly behind the latter, `balance`, the yearly average balance of the client. 
+The relationship between these variables and the response variable `y`.
+
+
+```{r,cache=TRUE}
+partial(svmFit, pred.var = "duration", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+partial(svmFit, pred.var = "housing", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+partial(svmFit, pred.var = "balance", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+```
+Starting with `duration`, we see that the relationship somewhat resembles the logit profile characteristic of the benchmark model, insofar as it grows close to linearly between 0 and 1000, meaning that in this range the client's interested grows proportionally to the duration of the contact. However, as opposed to the previous two cases, SVM predicts a maximum around a duration of about 20 minutes, and then a considerable drop in likeliness as the contact grows longer. This might  be related to the client becoming uninterested in the process if it becomes too long and complicated.
+
+Moving onto `hosuing`, it is clear that having a housing loan greatly deters a client from subscribing a term deposit, since not having a housing loan improves the score of this variable by up to 50%. This should not be surprising, since a client with a housing loan will probably want to focus on paying it off instead of looking for new financial endeavors.
+
+Finally, we can take a look at `balance`, that is, how the average yearly balance of the client affects the response within the SVM model. As we can see from the plot, the score of this variable peaks at balances of about 7000€, only to dip right after, and then very slightly recover. This could be interpreted ass clients with medium balance, and so some disposable income, being interested in subscribing a term deposit. As their balance grows, either clients might be saving for some specific financial movement or they might be interested in more complex investments, and thus they lose interest in this specific campaign. The slightly positive slope as the balance grows after 20000€ could be related to clients wanting to diversify their investments.
+
+
+## 3.4. Decision Tree
+
+The fourth Machine Learning algorithm that will be studied is that of Decision Trees, and more specifically the C5.0 method. These set of algorithms is based off binary trees, which split the sample into two homogeneous and non-overlapping regions based on the most relevant predictor. These serve as the basis for other more complex Machine Learning algorithms such as Random Forest or Gradient Boosting.
+
+### 3.4.1. Hyperparameter tuning
+
+The hyperparameters that will be tuned for the C5.0 algorithm are whether winnowing should occur or not, which consists of pre-selecting a subset of the attributes that will be used to construct the decision tree, and the maximum number of trials that will be carried out.
+
+```{r,warning=FALSE,message=FALSE,cache=TRUE}
+grid_c50 <- expand.grid( .winnow = c(TRUE,FALSE), .trials=c(1,5,10,15,20), .model="tree" )
+
+dtFit <- train(y ~.,
+                data=train,
+                method="C5.0",
+                metric="EconomicProfit",
+                tuneGrid = grid_c50,
+                trControl = ctrl)
+```
+
+The optimal hyperparameter configuration for Decisions Trees has been found to be:
+
+```{r}
+kable(dtFit$bestTune)
+```
+
+
+```{r,cache=TRUE}
+dtPred = predict(dtFit, test)
+
+confusionMatrix(dtPred,test$y)
+
+EconomicProfit(data = data.frame(pred=dtPred, obs=test$y))
+```
+This method, which tends to have large variance, achieves an accuracy similar to that of logistic regression, although it does commit quite a lot of the most dangerous misclassification, yielding a much lower relative profit than the benchmark model.
+
+### 3.4.2. Threshold optimization
+
+Just like in every section before this one, the threshold can be optimized to maximize the relative profit.
+
+```{r,cache=TRUE,warning=FALSE}
+niters = 10
+profit.i = matrix(NA, nrow = niters, ncol = 10)
+
+j <- 0
+for (threshold in seq(0.05,0.5,0.05)){
+  j <- j + 1
+  cat(j)
+  for(i in 1:niters){
+    
+    # partition data intro training (75%) and testing sets (25%)
+    d <- createDataPartition(train$y, p = 0.8, list = FALSE)
+    # select training sample
+    
+    train.cs <- train[d,]
+    test.cs  <- train[-d,]
+    
+    dtFit.cs <- train(y ~ ., data=train.cs, method = "C5.0",
+                      tuneGrid = dtFit$bestTune, 
+                      preProcess = c("center", "scale"),
+                      trControl = ctrl.thresh,
+                      metric='EconomicProfit')
+    
+    dtProb = predict(dtFit.cs, test.cs, type="prob")
+    dtPred = rep("no", nrow(test.cs))
+    dtPred[which(dtProb[,2] > threshold)] = "yes"
+    
+    
+    profit.i[i,j] <- EconomicProfit(data = data.frame(pred=factor(dtPred), obs=test.cs$y))
+    
+  }
+}
+
+# Threshold optimization:
+boxplot(profit.i, main = "Threshold selection",
+        ylab = "Relative profit",
+        xlab = "Threshold",
+        names = seq(0.05,0.5,0.05),col="royalblue2",las=2)
+
+apply(profit.i, 2, median)
+```
+As can be observed from the boxplot, modifying the threshold does not greatly affect the relative profit achieved by the Decision Tree model, for which the characteristically high bias of this model might be to blame, although the biggest profit seems to come from setting an extremely conservative threshold of 0.05. In any case, 0.05 is the threshold that will be used for the definitive predictions with Decision Trees.
+
+```{r,cache=TRUE}
+dtProb=predict(dtFit,test,type="prob")
+
+threshold = 0.05
+dtPred = rep("no", nrow(test))
+dtPred[which(dtProb[,2] > threshold)] = "yes"
+
+confusionMatrix(factor(dtPred), test$y)
+
+economic.profit.dt <- EconomicProfit(data=data.frame(pred=factor(dtPred), obs=test$y))
+economic.profit.dt
+```
+Even after hyperparameter tuning and threshold optimization, the performance of this model is not particularly good. Although still better than kNN, it definitely falls behind both logistic regression and SVM. This model is known to not be very strong on its own as mentioned earlier, and so this should not be a discouraging result.
+
+### 3.4.3. Variable importance
+
+Once again, the importance of the different variables can be studied.
+
+```{r}
+dt.imp <- varImp(dtFit, scale = F)
+plot(dt.imp, scales = list(y = list(cex = .95)))
+```
+As was the case with logistic regression, the two most important variables are `duration` and `poutcome`.
+
+```{r,cache=TRUE}
+partial(dtFit, pred.var = "duration", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+partial(dtFit, pred.var = "poutcome", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+```
+The interpretation of the relation between the variables and the response is qualitatively the same. There is a somewhat linear increase in the likeliness of a client subscribing with the duration of the contact up until about a contact of 1000 seconds, after which the subscription is pretty much guaranteed. As far as the outcome of the previous contact is concerned, earlier success greatly improves the chances of the new campaign, even more according to Decision Tree than logistic regression predicted.
+
+## 3.5. Random Forest
+
+As anticipated in the previous section, Random Forest is a Machine Learning algorithm based on Decision Trees. Since Decision Trees by themselves have low bias but large variance, the way to deal with this issue in Random Forest is to use bootstrap aggregation (bagging) for trees. Furthermore, Random Forests uses random subspaces to reduce correlation between the trees and improves the predictive performance of the trees by averaging them. In classification, this aggregation is done by choosing the most popular vote over all the trees.
+
+### 3.5.1. Hyperparameter tuning
+
+The only hyperparameter that will be tuned for this method is the number of variables randomly selected at each split (mtry).
+
+```{r,cache=TRUE,warning=FALSE}
+rfFit <- train(y ~., 
+                  method = "rf", 
+                  data = train,
+                  preProcess = c("center", "scale"),
+                  ntree = 200,
+                  cutoff=c(0.7,0.3),
+                  tuneGrid = expand.grid(mtry=seq(6,12,2)),
+                  metric = "EconomicProfit",
+                  trControl = ctrl)
+```
+
+The optimal hyperparameter configuration has been found to be:
+
+```{r}
+rfFit$bestTune
+```
+
+
+```{r,cache=TRUE}
+rfPred = predict(rfFit,test)
+
+confusionMatrix(rfPred,test$y)
+
+EconomicProfit(data=data.frame(pred=rfPred,obs=test$y))
+```
+As we can see from the confusion matrix, the accuracy obtained by Random forest is slightly lower than that of logistic regression. The relative profit, however, is higher, due to less dangerous misclassification taking place.
+
+
+### 3.5.2. Threshold optimization
+
+The threshold can be optimized to further maximize the relative profit:
+
+
+```{r,cache=TRUE,warning=FALSE}
+niters = 10
+cost.i = matrix(NA, nrow = niters, ncol = 10)
+# 20 replicates for training/testing sets for each of the 10 values of threshold
+
+j <- 0
+for (threshold in seq(0.05,0.5,0.05)){
+  j <- j + 1
+  cat(j)
+  for(i in 1:niters){
+    
+    # partition data intro training (75%) and testing sets (25%)
+    d <- createDataPartition(train$y, p = 0.8, list = FALSE)
+    # select training sample
+    
+    train.cs <- train[d,]
+    test.cs  <- train[-d,]
+    
+    rfFit.cs <- train(y ~ ., data=train.cs, method = "rf",
+                      tuneGrid = rfFit$bestTune, 
+                      preProcess = c("center", "scale"),
+                      trControl = ctrl.thresh,
+                      metric='EconomicProfit')
+    
+    rfProb = predict(rfFit.cs, test.cs, type="prob")
+    rfPred = rep("no", nrow(test.cs))
+    rfPred[which(rfProb[,2] > threshold)] = "yes"
+    
+    profit.i[i,j] <- EconomicProfit(data=data.frame(pred=factor(rfPred),obs=test.cs$y))
+    
+  }
+}
+
+# Threshold optimization:
+boxplot(profit.i, main = "Threshold selection",
+        ylab = "Relative profit",
+        xlab = "threshold value",
+        names = seq(0.05,0.5,0.05),col="royalblue2",las=2)
+
+# values around 0.2 are reasonable
+apply(profit.i, 2, median)
+```
+
+```{r,cache=TRUE}
+rfProb=predict(rfFit,test,type="prob")
+
+threshold = 0.25
+rfPred = rep("no", nrow(test))
+rfPred[which(rfProb[,2] > threshold)] = "yes"
+
+confusionMatrix(factor(rfPred), test$y)
+
+economic.profit.rf <- EconomicProfit(data=data.frame(pred=factor(rfPred), obs=test$y))
+economic.profit.rf
+```
+Finally, there seems to be decent improvement when compared with all the models attempted before, achieving better performance than all of them in every single metric used so far: relative profit, accuracy and kappa. This goes to show the strength of Random Forest (and ensemble models in general) when it comes to capturing the non-linearity within a dataset as well as its handling of categorical features. 
+
+### 3.5.3. Variable importance
+
+The importance of the different variables also deserves some study.
+
+```{r}
+rf.imp <- varImp(rfFit, scale = F)
+plot(rf.imp, scales = list(y = list(cex = .95)))
+```
+As has been happening throughout the whole study, the variable `duration` is by far the most important, although for this method it is followed by the average yearly balance in the bank account of the client and their age.
+
+The relationship between these variables and the response can be studied more closely:
+
+```{r,cache=TRUE}
+partial(rfFit, pred.var = "duration", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+partial(rfFit, pred.var = "balance", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+partial(rfFit, pred.var = "age", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+```
+
+Starting the `duration` we see a very similar curve to what has been seen so far. There is an almost linear increase of the likeliness up until 1000 seconds contacts after which it basically plateaus. However, in this case instead of a plateau there seems to be more of a slight negative slope, meaning that some clients might be deterred when the contact becomes too long. This indicates that the first 15 or 16 minutes of the contact call might be the more important ones, and it is in that period of time that the client should be convinced. Moving on to the `balance variable`, we see a completely different landscape. There seems to be a higher likeliness of subscribing among negative balances than null or slightly positive ones. This might be related to irresponsible financial decisions. After this and up until balances of about 5000€, the likeliness of subscribing unsurprisingly increases, as this clients might feel more comfortable investing in a term deposit. Interestingly enough, there is quite a sharp decrease from balances of 5000€ up until about 15000€, after which the probability of subscribing seems to plateau. This might be due to higher balances not being completely opposed to subscribing a term deposit but at the same time not being deeply interested in it, and perhaps looking for more interesting financial decisions.
+Finally, the `age` variable also yields an interesting profile. As we move on from younger clients to middle-aged ones, there is a decrease in the probability of subscribing a term deposit. This could be related to middle-aged clients having less disposable income due to circumstances such as having kids or a mortgage. When considering clients of ages of around 60 years of age or older there is a very sharp increase, almost like a step function, in their likeliness to subscribe. This might be related to the age of retirement, when clients have see a sharp increase in their disposable income and might be keen on ways to invest it. There seems to be a very slight decrease after 70, which might be related with clients that, at that age, are not be interested in long term profits.
+
+
+## 3.6. Gradient Boosting
+
+Gradient Boosting is yet another ensemble Machine Learning model based on Decision Trees. In this case instead of bagging the algorithm uses boosting, which consists of learning sequentially in order to give more influence to observations that are incorrectly classified by previous learners, thus reducing mainly the bias but also the variance.
+
+### 3.6.1. Hyperparameter tuning
+
+There are plenty of hyperparameters that can be tuned when using Gradient Boosting, which contributes to this method being quite computationally expensive. Some of the most important ones are `eta`, which is the learning parameter and controls how much information from a new tree will be used in the Boosting, `max_depth`, which controls the maximum depth of the trees, `colsample_bytree`, which controls the number of features supplied to a tree, `nrounds`, which controls the maximum number of iterations, or `min_child_weight`, which controls the minimum sum of instances necessary for the tree splitting to keep on going.
+
+```{r}
+xgb_grid = expand.grid(
+  nrounds = seq(500,1000,125),
+  eta = seq(0.002,0.01,0.002),
+  max_depth = seq(2,6,1),
+  gamma = 1,
+  colsample_bytree = seq(0.2,0.6,0.1),
+  min_child_weight = seq(1,5,1),
+  subsample = 1)
+```
+
+
+```{r,message=FALSE,warning=FALSE,results='hide',cache=TRUE}
+xgbFit = train(y ~ .,
+                  data=train,
+                  trControl = ctrl,
+                  metric="EconomicProfit",
+                  tuneGrid = xgb_grid,
+                  preProcess = c("center", "scale"),
+                  method = "xgbTree",
+                  verbosity=0)
+```
+
+The optimal hyperparameter configuration has been found to be:
+
+```{r}
+kable(xgbFit$bestTune)
+```
+
+
+```{r,cache=TRUE}
+xgbPred = predict(xgbFit,test)
+
+confusionMatrix(xgbPred,test$y)
+
+EconomicProfit(data=data.frame(pred=xgbPred,obs=test$y))
+```
+So far, Gradient Boosting is the model that has achieved the highest relative profit out of all the models studied, while keeping a reasonably high accuracy.
+
+### 3.6.2. Threshold optimization
+
+Having optimized the hyperparameters, it might also be of interest to optimize the threshold to further improve the relative profit.
+
+```{r,cache=TRUE,warning=FALSE}
+niters = 10
+cost.i = matrix(NA, nrow = niters, ncol = 10)
+# 20 replicates for training/testing sets for each of the 10 values of threshold
+
+j <- 0
+for (threshold in seq(0.05,0.5,0.05)){
+  j <- j + 1
+  cat(j)
+  for(i in 1:niters){
+    
+    d <- createDataPartition(train$y, p = 0.8, list = FALSE)
+    
+    train.cs <- train[d,]
+    test.cs  <- train[-d,]
+    
+    xgbFit.cs <- train(y ~ ., data=train.cs, method = "xgbTree",
+                       tuneGrid = xgbFit$bestTune, 
+                       preProcess = c("center", "scale"),
+                       trControl = ctrl.thresh,
+                       metric='EconomicProfit')
+    
+    xgbProb = predict(xgbFit.cs, test.cs, type="prob")
+    xgbPred = rep("no", nrow(test.cs))
+    xgbPred[which(xgbProb[,2] > threshold)] = "yes"
+    
+    profit.i[i,j] <- EconomicProfit(data=data.frame(pred=factor(xgbPred),obs=test.cs$y))
+    
+  }
+}
+
+# Threshold optimization:
+boxplot(profit.i, main = "Threshold selection",
+        ylab = "Relative cost",
+        xlab = "threshold value",
+        names = seq(0.05,0.5,0.05),col="royalblue2",las=2)
+
+# values around 0.2 are reasonable
+apply(profit.i, 2, median)
+```
+The optimal threshold seems to be 0.45, and so this will be used to make the final predictions of the model:
+
+```{r,cache=TRUE}
+xgbProb=predict(xgbFit,test,type="prob")
+
+threshold = 0.45
+xgbPred = rep("no", nrow(test))
+xgbPred[which(xgbProb[,2] > threshold)] = "yes"
+
+confusionMatrix(factor(xgbPred), test$y)
+
+economic.profit.xgb <- EconomicProfit(data=data.frame(pred=factor(xgbPred), obs=test$y))
+economic.profit.xgb
+```
+Interestingly, using this threshold causes the profit and accuracy to fall slightly. However, we have to take into account that this is simply one realisation, as opposed to the boxplot used to select the optimal threshold, which contains 10 different realisation for each value, and so is more trustworthy.
+
+
+### 3.6.3. Variable importance
+
+Just as with nay other models, studying the most important variables and their relation to the response might result in some interesting insights.
+
+```{r}
+xgb.imp <- varImp(xgbFit, scale=F)
+plot(xgb.imp, scales = list(y = list(cex = .95)))
+```
+
+As has been usual along this project, the most important variables are the duration of the contact, the outcome of the contact in the previous campaign and whether the client has a housing loan or not.
+
+
+```{r,cache=TRUE}
+partial(rfFit, pred.var = "duration", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+partial(rfFit, pred.var = "poutcome", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+partial(rfFit, pred.var = "housing", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+```
+The profile of `duration` is very similar to the ones seen earlier in the other Machine Learning models: there is an almost linear growth (with a sharp positive slope) of the score with respect to the duration of the client, showing that for contacts shorter than 1000 seconds, the interest of the client might be proportional to the duration of the contact. the score peaks at around contacts of 20 minutes, after which it slightly dips. The interpretation of this shape is essentially the same as commented earlier, and so will be skipped in this section.
+
+As far as the other two variables are concerned, once again we see that the score of clients who liked and participated in the previous campaign is more than twice as big as those who did not or were not contacted for said campaign, and that having a housing loan greatly deter clients from subscribing a term deposit in the current campaign.
+
+## 3.7 Neural Networks
+
+The final individual Machine Learning model to be studied is that of Neural Networks. Although the concept has existed for almost a century, these have become incredibly popular lately due to the huge amounts of data that exist today. 
+
+### 3.7.1. Single Layer Perceptron
+
+First, we will try the most basic neural network: single layer perceptron, which essentially is nothing more than logistic regression.
+
+#### 3.7.1.1 Hyperparameter tuning
+
+The hyperparameters that can be tuned for this network are its size, which determines the amount of neurons that the model contains, and the decay constant, which controls the importance of the previous iterations when updating the weights of the network through backpropagation.
+
+```{r,cache=TRUE,warning=FALSE,message=FALSE,results='hide'}
+nnFit <- train(y ~., 
+                  method = "nnet", 
+                  data = train,
+                  preProcess = c("center", "scale"),
+                  MaxNWts = 1000,
+                  maxit = 100,
+                  tuneGrid = expand.grid(size=c(2,4,6), decay=c(0.01,0.001)), 
+                  metric = "EconomicProfit",
+                  trControl = ctrl)
+plot(nnFit)
+```
+The hyperparameters found to be optimal are:
+
+```{r}
+kable(nnFit$bestTune)
+```
+
+with which the model predicts:
+
+```{r,cache=TRUE}
+nnPred = predict(nnFit, test)
+
+confusionMatrix(nnPred,test$y)
+
+EconomicProfit(data = data.frame(pred=nnPred, obs=test$y))
+```
+The single layer perceptron yields a less-than-optimal profit but still decent considering the simplicity of the model, despite making the least number of the most costly misclassifications out of all the models. Although this sounds contradictory, this is happening because of the huge number of less costly misclassifications that this model is predicting, which also leads to a lower accuracy in general.
+
+#### 3.7.1.2. Threshold optimization
+
+After tuning the hyperparameters, it might also be convenient to optimize the threshold in order to maximize the relative profit.
+
+```{r,cache=TRUE,warning=FALSE,results='hide'}
+niters = 10
+cost.i = matrix(NA, nrow = niters, ncol = 10)
+
+j <- 0
+for (threshold in seq(0.05,0.5,0.05)){
+  j <- j + 1
+  cat(j)
+  for(i in 1:niters){
+    
+    d <- createDataPartition(train$y, p = 0.8, list = FALSE)
+    
+    
+    train.cs <- train[d,]
+    test.cs  <- train[-d,]
+    
+    nnFit.cs <- train(y ~ ., data=train.cs, method = "nnet",
+                   MaxNWts = 1000, maxit=100,
+                   tuneGrid = nnFit$bestTune,
+                   preProcess = c("center", "scale"),
+                   trControl = ctrl.thresh,
+                   metric='EconomicProfit')
+    
+    nnProb = predict(nnFit.cs, test.cs, type="prob")
+    nnPred = rep("no", nrow(test.cs))
+    nnPred[which(nnProb[,2] > threshold)] = "yes"
+    
+    profit.i[i,j] <- EconomicProfit(data=data.frame(pred=factor(nnPred),obs=test.cs$y))
+    
+  }
+}
+```
+
+```{r}
+
+# Threshold optimization:
+boxplot(profit.i, main = "Threshold selection",
+        ylab = "Relative profit",
+        xlab = "threshold value",
+        names = seq(0.05,0.5,0.05),col="royalblue2",las=2)
+
+apply(profit.i, 2, median)
+```
+As we can see from the plot, the optimal threshold is 0.5, which will be used for the final predictions of the model:
+
+```{r,cache=TRUE}
+nnProb=predict(nnFit,test,type="prob")
+
+threshold = 0.5
+nnPred = rep("no", nrow(test))
+nnPred[which(nnProb[,2] > threshold)] = "yes"
+
+confusionMatrix(factor(nnPred), test$y)
+
+economic.profit.nn <- EconomicProfit(data=data.frame(pred=factor(nnPred), obs=test$y))
+economic.profit.nn
+```
+Since this is the default threshold of the `caret` library, the metrics do not change.
+
+#### 3.7.1.3. Variable importance
+
+As usual, we can check the importance of the different variables within the model:
+
+```{r}
+nn.imp <- varImp(nnFit, scale=F)
+plot(nn.imp, scales = list(y = list(cex = .95)))
+```
+
+The most important variables have been found to be `duration` and ``
+
+```{r,cache=TRUE}
+partial(rfFit, pred.var = "duration", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+partial(rfFit, pred.var = "month", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+```
+
+The profile and its interpretation for the variable `duration` is the same as has happened for every single model: the likeliness of a client subscribing a term deposit peaks at around 15 minutes.
+The relationship of the variable `month` with the response indicates that clients are more receptive around june, august and september.
+
+
+### 3.7.2. Multilayer Perceptron
+
+The second neural network model that will be studied is the logical next step after the single-layer perceptron, that is, the multilayer perceptron. This is nothing more than somewhat of an ensemble of single layer perceptron, combined in such a way that the outputs of some will be the inputs of the next. Normally, this is referred to as the layers of the neural network.
+
+#### 3.7.2.1. Hyperparameter tuning
+
+The hyperparaters that can be tuned within ths `caret` model consist of the number of neurons of each of the three layers that will be considered, as well as the propotion of dropout, which consists of suppressing the connection between some nodes in each iteration to avoid overfitting.
+
+```{r,cache=TRUE,warning=FALSE,results='hide'}
+dnnFit <- train(y ~., 
+                method = "dnn", 
+                data = train,
+                preProcess = c("center", "scale"),
+                numepochs = 20,
+                tuneGrid = expand.grid(layer1 = 1:4,
+                                         layer2 = 0:2,
+                                         layer3 = 0:2,
+                                         hidden_dropout = c(0,0.1), 
+                                         visible_dropout = c(0,0.1)),
+                metric = "EconomicProfit",
+                trControl = ctrl)
+```
+The optimal parameters have been found to be:
+
+```{r}
+kable(dnnFit$bestTune)
+```
+
+```{r,cache=TRUE}
+dnnPred = predict(dnnFit, test)
+
+confusionMatrix(dnnPred,test$y)
+
+EconomicProfit(data = data.frame(pred=dnnPred, obs=test$y))
+```
+The multilayer perceptron yields quite a high accuracy, but a smaller profit than models such as Random Forest or Gradient Boosting, due to a bigger number of expensive misclassifications. 
+
+
+#### 3.7.2.2. Threshold optimization
+
+After tuning the hyperparameters, it might also be convenient to optimize the threshold in order to maximize the relative profit.
+
+```{r,cache=TRUE,warning=FALSE,results='hide'}
+niters = 10
+cost.i = matrix(NA, nrow = niters, ncol = 10)
+
+j <- 0
+for (threshold in seq(0.05,0.5,0.05)){
+  j <- j + 1
+  cat(j)
+  for(i in 1:niters){
+    
+
+    d <- createDataPartition(train$y, p = 0.8, list = FALSE)
+    # select training sample
+    
+    train.cs <- train[d,]
+    test.cs  <- train[-d,]
+    
+    dnnFit.cs <- train(y ~ ., data=train.cs, method = "dnn",
+                   numepochs=100,
+                   tuneGrid = dnnFit$bestTune,
+                   preProcess = c("center", "scale"),
+                   trControl = ctrl.thresh,
+                   metric='EconomicProfit')
+    
+    dnnProb = predict(dnnFit.cs, test.cs, type="prob")
+    dnnPred = rep("no", nrow(test.cs))
+    dnnPred[which(dnnProb[,2] > threshold)] = "yes"
+    
+    profit.i[i,j] <- EconomicProfit(data=data.frame(pred=factor(dnnPred),obs=test.cs$y))
+    
+  }
+}
+```
+
+```{r}
+
+# Threshold optimization:
+boxplot(profit.i, main = "Threshold selection",
+        ylab = "Relative profit",
+        xlab = "threshold value",
+        names = seq(0.05,0.5,0.05),col="royalblue2",las=2)
+
+# values around 0.2 are reasonable
+apply(profit.i, 2, median)
+```
+
+As we can see from the plot, the optimal threshold is actually the default one, that is, 0.5, which will be used for the final predictions of the model:
+
+```{r,cache=TRUE}
+dnnProb=predict(dnnFit,test,type="prob")
+
+threshold = 0.5
+dnnPred = rep("no", nrow(test))
+dnnPred[which(dnnProb[,2] > threshold)] = "yes"
+
+confusionMatrix(factor(dnnPred), test$y)
+
+economic.profit.dnn <- EconomicProfit(data=data.frame(pred=factor(dnnPred), obs=test$y))
+economic.profit.dnn
+```
+It should not surprise that both neural network models have achieved poorer results than models such as Gradient Boosting or Random Forest, since we are dealing with tabular data, a terrain in which neural network do not particularly shine when compared to said models.
+
+#### 3.7.2.3. Variable importance
+
+Moving on to check the importance of the different variables within the model:
+
+```{r}
+nn.imp <- varImp(nnFit, scale=F)
+plot(nn.imp, scales = list(y = list(cex = .95)))
+```
+
+The most important variables have been found to be `duration` and ``
+
+```{r,cache=TRUE}
+partial(rfFit, pred.var = "poutcome", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+partial(rfFit, pred.var = "duration", which.class=2, plot = TRUE, prob=TRUE, rug = TRUE)
+```
+
+Once again, we obtain a very familiar profile (and associated interpretation) for the variable `duration`.
+
+
+# 4. Ensemble models
+Finally, after having studied several different individual Machine Learning models, as a last resort to further improve the relative profit we can turn our attention to ensemble models. Ensemble models consist of combining several other models to form a meta-classifier. Through this procedure, they are able to reduce the variance, by making results less dependent on features of a single model and training set, and reduce the bias as well, by producing more reliable predictions than a single model.
+Much like the inner workings of Random Forest do with Decision Trees, in classification tasks, the mode is used to combine the different outputs of the models.
+
+```{r}
+mode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+```
+
+To create a basic ensemble model, we have chosen the three most successful models among those studied in this report: logistic regression, Random Forest and Gradient Boosting.
+
+```{r,cache=TRUE}
+ensemble.pred = apply(data.frame(factor(dnnPred), factor(xgbPred), factor(rfPred)), 1, mode) 
+
+confusionMatrix(factor(ensemble.pred),test$y)
+
+economic.profit.ens <- EconomicProfit(data=data.frame(pred=factor(ensemble.pred),obs=test$y))
+economic.profit.ens
+```
+The ensemble model, as should be expected, obtains quite a high accuracy as well as the highest profit out of all the models studied. 
+
+# 5. Conclusions
+
+Several Machine Learning models, ranging from the most conceptually simple (such as kNN) to more complex ones (such as Random Forest or Gradient Boosting), have been studied for the task of classifying whether clients of a Portuguese bank might want to participate in a current campaign which consists of subscribing a term deposit. In order to make such predictions, the models have been trained on different variables ranging from financial information of each client to information on the client's reaction to previous campaigns. 
+
+Furthermore, in order to study how to maximize profit instead of accuracy, due to some misclassifications being more expensive than others, cost sensitive learning has been implemented for every single model. The relative profit has been furthered improved by means of threshold optimization. Below the general results in terms of relative profit can be found:
+
+```{r}
+sum.profit = data.frame(Logi=economic.profit.lr, kNN=economic.profit.knn,
+                        SVM=economic.profit.svm, DT=economic.profit.dt,
+                        RF=economic.profit.rf, XGB=economic.profit.xgb,
+                        NN=economic.profit.nn, DNN=economic.profit.dnn,
+                        Ensemble=economic.profit.ens)
+kable(sum.profit)
+```
+
+Besides studying the accuracy and maximum profit for each model, with the aim of providing some clarity to the usual obscurity provided by Machine Learning models, the importance of the variables within each particular model has been studied. More exact relationships between the most important variables for each model and the response have also been studied. This last part has provided some interesting insights. All across the board, the duration of the contact has been the most important variable in terms of its effect on the likeliness of obtaining a positive response. In most models, it was followed by whether the client had a housing loan or not, with clients who are more likely to subscribe a term deposit opting for the latter category. 
+
+Focusing on the most successful models and the relationship between their more important variables and the response has provided a target demographic for likely-to-be-successful contacts: retired clients who do not have a housing loan. It has also set an objective for the duration of the contact with said clients: the call should last about 15 minutes but not more.
+
+
+
