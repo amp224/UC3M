@@ -1,0 +1,620 @@
+---
+title: 'Classification through Probabilistic Learning: Stellar Classification'
+author: "Alejandro Macías Pastor"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1. Introduction
+
+The data that will be studied in this project is astronomical data obtained through the Sloan Digital Sky Survey (SDSS), although the precise dataset has been obtained from Kaggle. The file is available [here](https://www.kaggle.com/datasets/fedesoriano/stellar-classification-dataset-sdss17).
+
+The main objective of this astronomical survey was to identify astronomical objects based on their position in the sky and several photometric measurements. The following list contains all the variables found in the dataset, along with a brief description:
+
+-   **obj_ID**: the unique value that identifies the object within the catalog.
+
+-   **alpha**: Right Ascension angle.
+
+-   **delta**: Declination angle.
+
+-   **u**: Measurement from the Ultraviolet filter in the photometric system.
+
+-   **g**: Measurement from the Green filter in the photometric system.
+
+-   **r**: Measurement from the Red filter in the photometric system.
+
+-   **i**: Measurement from the Near-Infrared filter in the photometric system.
+
+-   **z**: Measurement from the Infrared filter in the photometric system.
+
+-   **run_ID**: Run Number used to identify the specific scan.
+
+-   **rerun_ID**: Rerun Number used to specify how the image was processed.
+
+-   **cam_col**: Camera column to identify the scanline within the run.
+
+-   **field_ID**: Field number to identify each field.
+
+-   **spec_obj_ID**: Unique ID used for optical spectroscopic objects.
+
+-   **redshif**: redshift value based on the increase in wavelength.
+
+-   **plate**: identifies each plate in SDSS (metallic plates that are part of the instrument).
+
+-   **MJD**: (Modified Julian) Date, used to indicate when the data was taken.
+
+-   **fiber_ID**: identifies the fiber that pointed the light at the focal plane in each observation.
+
+-   **class**: class of the astronomical object (galaxy, star or quasar).
+
+```{r}
+library(ggplot2)
+library(caret)
+library(dplyr)
+library(GGally)
+library(nnet)
+set.seed(333) # for the sake of reproducibility 
+```
+
+```{r}
+# import the dataset
+data = read.csv("star_classification.csv")
+```
+
+# 2.Data Preprocessing
+
+## 2.1 Imputation and removal
+
+Before creating any models, it is important to study in detail all the observations and variables, in order to both gain some insight and preprocess when needed to avoid later problems when creating models.
+
+Since the first two columns are simply the observations index and a unique identifier of each object within the catalog, removing these two variables will not affect the classification task, since they are non-informative.
+
+```{r}
+data = data[-c(1,2)] # remove first two columns
+```
+
+Let us now check whether there are any missing values in any of the remaining variables:
+
+```{r}
+print("Count of missing values by column wise")
+sapply(data, function(x) sum(is.na(x)))
+```
+
+As can be observed above, there are missing values in the `alpha`, `delta` and `redshift` variables.
+
+It is also worth noting that there is one observation (#79544) for which the variables `u`, `g` and `z` take the value -9999:
+
+```{r}
+data[data$u==-9999,] # find erroneous observation
+```
+
+Since this is physically impossible, we will consider these three values for this observation to be NAs:
+
+```{r}
+data$u[data$u == -9999] = NA
+data$g[data$g == -9999] = NA
+data$z[data$z == -9999] = NA
+```
+
+The imputation of the missing values can be easily done through the `caret` library's functionalities. In particular, a method based on the k-Nearest Neighbours algorithm will be used.
+
+```{r}
+imputer = caret::preProcess(data, method='knnImpute')
+data = predict(imputer, data)
+sapply(data, function(x) sum(is.na(x)))
+```
+
+It is worth mentioning that the `preProcess` function also standardizes the columns of the dataset by default. For the sake of the subsequent EDA of the variables, this standardization will be reversed:
+
+```{r}
+# store the statistics to destandardize
+destandard <- data.frame(col = names(imputer$mean),
+                         mean = imputer$mean,
+                         sd = imputer$std)
+# undo the scaling
+for(i in destandard$col){
+ data[i] <- data[i]*imputer$std[i]+imputer$mean[i] 
+}
+```
+
+## 2.2 Exploratory Data Analysis
+
+Let us now deal with each variable individually.
+
+### Class
+
+```{r}
+data$class = factor(data$class)
+plot(data$class)
+prop.table(table(data$class))
+table(data$class)
+```
+
+The three different classes are clearly not well-balanced. Since this could impact negatively the performance of the models to be studied, it is necessary to balance the three classes. For this, there are two different options: upsampling or dowmsapling. The decision to downsample has been made in order to avoid introducing undesirable characteristics into the dataset that can come from repeating the same observations too many times, such as high correlations between variables.
+
+Since the dataset has plenty of observations and the biggest difference comes from the `GALAXY` class, we will opt to mainly downsample said group and slightly downsample the `STAR` group as well. To do this, we can use the `downSample` function from the `caret` library:
+
+```{r}
+# downSample glues the Class column at the end of the data frame by default
+# so it is necessary to remove it from the input so it is not redundant
+data = caret::downSample(x=subset(data, select= -class), y=data$class)
+
+# double-check the proportions after downsampling
+plot(data$Class)
+table(data$Class)
+prop.table(table(data$Class))
+
+```
+
+Now that the classes have been perfectly balanced, we can proceed to create the train-test partition that will be used later on in this report to train and test the different models. Considering the moderately big size of our dataset (56883 observations), the proportion used for the partition will be 50%-50% for training and testing, respectively:
+
+```{r}
+# create the partition
+part = createDataPartition(data$Class, p = 0.5, list = FALSE)
+# separate into train and test
+data_train = data[part,]
+data_test = data[-part,]
+```
+
+We can now proceed to study the rest of the variables with the observations from the training set. This is done so that there is absolutely no data leakage, that is, so that the information contained in the testing set does not influence in any way the models that will be trained.
+
+### Alpha
+
+Starting with the Right Ascension, we can see that it is symmetric (around about 180º), although far from being normally-distributed due to its very heavy tails.
+
+```{r}
+hist(data_train$alpha, main='Histogram of Right Ascension', xlab='Right Ascension (º)')
+ggplot(data_train, aes(x=alpha, color=Class)) +
+  geom_density() +
+  labs(x="Right Ascension (º)")
+```
+
+As far as differences in terms of the astronomical object class are concerned, the second graph does not seem to show any significant evidence for their existence.
+
+### Delta
+
+The declination shows a slightly more normal-like shape, although with a significant peak around 0º.
+
+```{r}
+hist(data_train$delta, main='Histogram of Declination', xlab="Declination (º)")
+ggplot(data_train, aes(x=delta, color=Class)) +
+  geom_density() +
+  labs(x="Declination (º)")
+```
+
+When considering the frequency of the different classes in terms of the declination, no significant difference seems to arise.
+
+### u, g, r, i, z
+
+When considering all the photometric measurements, we can notice a common pattern in the data coming from all different filters. When all together, the observations seem to follow somewhat of a normal distribution, whereas when separated into the three different groups some differences arise.
+
+While the distribution of the photometric measurements for quasar objects and galaxies show either a clear peak or two peaks, respectively, in every part of the electromagnetic spectrum, the photometric measurements for galaxies alternate between distributions that plateau or have two slight peaks depending on the filter.
+
+```{r}
+hist(data_train$u, main='Histogram of Ultraviolet measurements', xlab='Ultraviolet measurement')
+ggplot(data_train, aes(x=u, color=Class)) +
+  geom_density() +
+  labs(x="Ultraviolet measurement")
+
+hist(data_train$g, main='Histogram of Green measurements', xlab='Green measurement')
+ggplot(data_train, aes(x=g, color=Class)) +
+  geom_density() +
+  labs(x="Green measurement")
+
+hist(data_train$r, main='Histogram of Red measurements', xlab='Red measurement')
+ggplot(data_train, aes(x=r, color=Class)) +
+  geom_density() +
+  labs(x="Red measurement")
+
+hist(data_train$i, main='Histogram of Near Infrared measurements', xlab='Near Infrared measurement')
+ggplot(data_train, aes(x=i, color=Class)) +
+  geom_density() +
+  labs(x="Near Infrared Measurement")
+
+hist(data_train$z, main='Histogram of Infrared measurements', xlab='Infrared measurement')
+ggplot(data_train, aes(x=z, color=Class)) +
+  geom_density() +
+  labs(x="Infrared measurement")
+```
+
+### run_ID
+
+```{r}
+hist(data_train$run_ID, main='Histogram of run ID', xlab='Run ID')
+ggplot(data_train, aes(x=run_ID, color=Class)) +
+  geom_density() +
+  labs(x="Run ID")
+```
+
+### rerun_ID
+
+The main thing to notice in the `rerun_ID` variable is that it only takes one unique value for every single observation:
+
+```{r}
+unique(data$rerun_ID) # check all different instances of rerun_ID
+```
+
+Therefore, this observation can be easily removed without losing any information.
+
+```{r}
+data_train = subset(data_train, select = -rerun_ID)
+data_test = subset(data_test, select = -rerun_ID)
+```
+
+### cam_col
+
+```{r}
+table(data_train$cam_col)
+unique(data_train$cam_col) # show the different values of cam_col
+```
+
+When checking the different values of the variable `cam_col`, we notice that it only takes 6 values. Given this, it might me more convenient to turn this variable into a categorical one.
+
+```{r}
+data_train$cam_col = factor(data_train$cam_col)
+data_test$cam_col = factor(data_test$cam_col)
+```
+
+Now, we can check whether there are any significant differences in terms of this variable between the three groups:
+
+```{r}
+ggplot(data_train, aes(x=cam_col, fill=Class)) +
+  geom_bar(position=position_dodge()) +
+  xlab("Camera column")
+  
+```
+
+There does not seem not be any significant preference of any group for any of the levels of `cam_col`.
+
+### field_ID
+
+```{r}
+hist(data_train$field_ID, main='Histogram of field ID', xlab='Field ID')
+ggplot(data_train, aes(x=field_ID, color=Class)) +
+  geom_density() +
+  labs(x="Field ID")
+```
+
+The variable `field_ID` shows essentially no difference accross the three differents groups, displaying a heavy left-skewness in all of them. Since this might lead to issues when fitting the models due to each model's assumptions, we can deal with this by using a log transformation:
+
+```{r}
+data_train$field_ID = log(data_train$field_ID)
+data_test$field_ID = log(data_test$field_ID)
+
+hist(data_train$field_ID, main='Histogram of log(field ID)', xlab='log(field ID)')
+```
+
+### spec_obj_ID
+
+The `spec_obj_ID` can be problematic. It is a specific identifier of an object, although a same number could be associated to different values of photometric measurements, depending on the rest of the characteristics of the measurements. As long as this identifier is the same, the classification should obviously be the same.
+
+```{r}
+length(unique(data$spec_obj_ID))
+```
+
+However, we can see that in the whole dataset there are as many `spec_obj_ID` as observations, meaning that there are no repeated objects. This allows us to remove this variable without losing information.
+
+```{r}
+data_train = subset(data_train, select = -spec_obj_ID)
+data_test = subset(data_test, select = -spec_obj_ID)
+```
+
+### redshift
+
+```{r}
+hist(data_train$redshift, main='Histogram of redshift', xlab='Redshift')
+
+ggplot(data_train[data_train$Class == "QSO",], aes(x=redshift)) +
+  geom_density() +
+  labs(x="Redshift (Quasar Objects)")
+ggplot(data_train[data_train$Class == "GALAXY",], aes(x=redshift)) +
+  geom_density() +
+  labs(x="Redshift (Galaxies)")
+ggplot(data_train[data_train$Class == "STAR",], aes(x=redshift)) +
+  geom_density() +
+  labs(x="Redshift (Stars)")
+
+```
+
+
+
+The redshift also shows a slightly problematic silhouette, as it once again display a left-skewed distribution, but in a way that is much harder to deal with due to the existence of negative values and a concentration of observations around 0, especially noticeable in the case of the stars. Since this left-skewness is not too heavy, and no basic transformations could easily deal with it, this column will not be modified. It could be interesting to pay close attention to the difference in distributions of redshift when separating by astronomical object type, since this might be useful when it comes to classifying new observations.
+
+### plate
+
+The overall distribution of the `plate` variable seems to be either slightly normal-like or slightly uniform, so no transformations will be needed. The interesting aspect of this variable is the fact that the densities for each group differ so greatly. This might hint at its importance when being used to identify the three different groups.
+
+```{r}
+hist(data_train$plate, main='Histogram of plate ID', xlab='plate ID')
+ggplot(data_train, aes(x=plate, color=Class)) +
+  geom_density() +
+  labs(x="Plate")
+```
+
+### MJD
+
+```{r}
+hist(data$MJD, main='', xlab='Modified Julian Date')
+ggplot(data_train, aes(x=MJD, color=Class)) +
+  geom_density() +
+  labs(x="Modified Julian Date")
+```
+
+As opposed to other variables, `MJD` shows slight right-skewness. The best way to deal with this is to use use an inverse transformation:
+
+```{r}
+data$MJD = 1/data$MJD
+
+hist(data$MJD)
+```
+
+One other feature of this variable that should be mentioned is that, just like in the case of `plate` and \`redshift\`\`, the different shapes of the distributions depending on the class might make this an important variables when it comes to differentiating between stellar objects.
+
+### fiber_ID
+
+Finally, the `fiber_ID` variable shows an uniform-like distribution, although deviation from that by a slight accumulation in values. The shape of said distribution is not significantly different among the three classes of astronomical objects considered.
+
+```{r}
+ggplot(data_train, aes(x=fiber_ID, color=Class)) +
+  geom_density() +
+  labs(x="Fiber ID")
+```
+
+## 2.3 Correlation and collinearity
+
+Once all the variables have been individually studied more in depth and before starting with the creation of models, it is convenient to check one last thing: correlation between variables. Very high correlation between variables might indicate that there is some redundancy in the data and it might lead to problems (in the form of singularities) when fitting the models.
+
+```{r}
+ggcorr(subset(data_train, select=-c(cam_col, Class))) # heatmap of correlations
+```
+
+As we can see from the correlations plot, there are several cases of very high correlation: between all the photometric measurements and between `plate` and `MJD`.
+
+```{r}
+# correlation coefficients of variables of interest
+cor(subset(data_train, select=c(u,g,r,i,z,plate,MJD)))
+```
+
+Since removing variables in general is not ideal, we will only remove those variables who present correlation coefficients higher than 0.95 with at least one other variable, that is, `i` and `MJD`.
+
+```{r}
+# remove highly correlated variables
+data_train = subset(data_train, select=-c(i,MJD))
+data_test = subset(data_test, select=-c(i,MJD))
+# double-check heatmap of correlations
+ggcorr(subset(data_train, select=-c(cam_col, Class)))
+```
+
+# 3. Classification
+
+Once the data set has been preprocessed and analysed, we proceed to classification. We are going to classify the test set obtained before with different algorithms. First, several instances of Bayes classifiers will be used, only to compare their performance with that of logistic regression. To better evaluate the models, 5-fold cross-validation will be used to test their performance. As the three classes have been perfectly balanced through downsampling, it is licit to use the accuracy directly as a metric of performance and predictive power.
+
+```{r}
+# prepare crossvalidation
+ctrl <- trainControl(method = "repeatedcv", 
+                     repeats = 1,
+                     number = 5)
+```
+
+## 3.1 Bayes classifiers
+
+### QDA
+
+First of all, we apply Quadratic Discriminant Analysis (QDA). We first make a model with all the variables:
+
+```{r}
+# train QDA model
+qdaFit <- train(Class ~ .,
+                method = "qda",
+                data = data_train,
+                preProcess = c("center", "scale"),
+                metric = "Accuracy",
+                trControl = ctrl,
+                linout=F)
+
+print(qdaFit) # show trained model
+
+qdaPred = predict(qdaFit, data_test) # predict on testing set
+
+confusionMatrix(qdaPred,data_test$Class) # show confusion matrix
+```
+
+With this method, we obtain an accuracy of around 92%, which seems quite high. Although QDA is known to be unstable, the moderately high number of observations in the dataset together with its low dimensionality probably help countering this issue. Furthermore, the accuracy is high considering how sensitive this method is to deviations from a Gaussian distribution in the predictors, such as the ones found in the variables `redshift`, `fiber_ID` or `run_ID`.
+
+Although the accuracy value is high, this is not the only measure that should be watched, as sometimes some misclassifications might lead to more grave errors than others. In this case, it is hard to rank them, which will be discussed more in depth in subsequent sections.
+
+### LDA
+
+We now apply Linear Discriminant Analysis (LDA) in a similar manner to that of QDA. Since one of the assumptions of LDA is that all groups have the same covariance matrix, we specify as an argument to `caret::train()` that the data given as input must be preprocessed by centering and scaling it accordingly. One assumption that LDA shares with QDA is that of the data being Gaussian, for which the predictors have been transformed throughout the previous section, although clear deviations from Gaussianity remain which might affect the results.
+
+```{r}
+# train LDA model on training set
+ldaFit <- train(Class ~ .,
+                method = "lda",
+                data = data_train,
+                preProcess = c("center", "scale"),
+                metric = "Accuracy",
+                trControl = ctrl)
+
+print(ldaFit) # show trained model
+
+
+ldaPred = predict(ldaFit, data_test) # predict on testing set
+
+confusionMatrix(ldaPred,data_test$Class) # show confusion matrix
+```
+
+With this method, the classification predicted yields an accuracy of around 79%, much lower than that of QDA.
+
+### Naïve Bayes
+
+Next, a Naïve Classifier will be used. This method is well-suited to multi-level classification, such as the case at hand. One of the assumptions of this method is the independence of the predictors, among which, as seen before, there exist some cases of somewhat high correlation.
+
+```{r}
+# train Naïve Bayes model on training set
+naiveFit <- train(Class ~ .,
+                  method = "naive_bayes",
+                  data = data_train,
+                  preProcess = c("center", "scale"),
+                  metric = "Accuracy",
+                  trControl = ctrl)
+
+print(naiveFit) # show trained model
+
+
+naivePred = predict(naiveFit, data_test) # make predictions on testing set
+
+confusionMatrix(naivePred, data_test$Class) # show confusion matrix
+
+```
+
+The Naïve Bayes classifier yields predictions with an accuracy of about 89%, once again quite a lot higher than the LDA model.
+
+## 3.2 Logistic regression
+
+Finally, in a completely different approach, logistic regression will be used to perform the classification. Since there are three orderless different classes, binary logistic regression will not suffice, and multinomial logistic regression will have to be used.
+
+The logistic regression model sometimes fail for categories with many levels, but since we are only considering three different classes this should not be a limitation.
+
+```{r}
+# fit logistic regression model on training data
+logiFit <- logiFit <- train(Class ~ ., 
+                method = "glmnet",
+                family = "multinomial",
+                data = data_train,
+                preProcess = c("center", "scale"),
+                metric = "Accuracy",
+                trControl = ctrl)
+print(logiFit) # show fit model
+
+logiPred = predict(logiFit, newdata=data_test) # make predictions on testing set
+confusionMatrix(logiPred, data_test$Class) # show confusion matrix
+```
+
+The accuracy achieved with the logistic regression model reaches almost 94%, making the most accurate model used.
+
+## 3.3 Cost sensitive learning
+
+Up until this point, the sole metric used to evaluate the trained models and their predictions has been simple accuracy, with no particular attention being paid to misclassification errors. However, as well as maximizing the general accuracy, in many occasions it is also interesting to minimize the misclassifications and, when doing so, taking into account that some error might be more severe than others.
+
+In this section, the method of cost sensitive learning, that is, taking into account the severity of the different errors when training the models and adjusting some parameters so that the most severe error is minimized, at the cost of increasing less severe errors but minimizing the total cost. As the logistic regression model was the most accurate, it will be the one studied with cost sensitive learning.
+
+For the sake of simplicity, the three classes present in the dataset will be reduced to only two: 'GALAXY' and 'NOT GALAXY'.
+
+```{r}
+data_train$Class = factor(ifelse(data_train$Class == 'GALAXY', 'GALAXY', "NOT GALAXY"))
+levels(data_train$Class)
+```
+
+Although this has slightly unbalanced the classes, it is not extreme.
+
+```{r}
+prop.table(table(data_train$Class))
+```
+
+In this classification problem it is difficult to assign a specific cost to misclassification errors the same way it can be done with financial or perhaps healthcare data. However, for the sake of being able to proceed with this method, some assumptions will have to be made.
+
+Let us for example assume we can quantify the costs and benefits of this classification in terms of information acquired in some arbitrary units. The categories are 'GALAXY' and 'NOT GALAXY' and so it is easy to see how it can be more informative to identify an actual galaxy as a galaxy, since it is more specific, whereas identifying something that is not a galaxy as such does not tell much information about the object.
+
+At the same time, we can assume that classifying something as 'GALAXY' when in truth it should be 'NOT GALAXY' is more costly than the opposite. This could be, perhaps, because classifying a galaxy as not a galaxy could be double-checked against other astronomical catalogues that include lots of information on galaxies, but the opposite might be harder to do since we would not know exactly what kind of astronomical object it is, leading to more confusion and having to dedicate more resources to correct said misclassification.
+
+A relative cost-matrix that could represent such a situation, with completely arbitrary numerical values and units, would be:
+
+| Prediction/Reference | GALAXY | NOT GALAXY |
+|----------------------|-------:|-----------:|
+| GALAXY               |      1 |       -1.5 |
+| NOT GALAXY           |  -0.25 |          0 |
+
+```{r, warning=FALSE, message=FALSE}
+profit.unit <- c(1, -0.25, -1.5, 0)
+
+
+profit.i = matrix(NA, nrow = 30, ncol = length(seq(0.15,0.7,0.05)))
+# 30 replicates for training/testing sets for each of the 13 values of threshold
+
+j <- 0
+ctrl <- trainControl(method = "none")
+
+for (threshold in seq(0.15,0.7,0.05)){
+
+  j <- j + 1
+  cat(j)
+
+  for(i in 1:30){
+
+    # create 50%-50% train-test partition
+    d <- createDataPartition(data_train$Class, p = 0.5, list = FALSE)
+    
+    # select training sample
+    train <- data_train[d,]
+    test  <- data_train[-d,]
+    
+    logiCSL <- train(Class ~ ., 
+                     method = "glmnet",
+                     data = train,
+                     preProcess = c("center", "scale"),
+                     metric = "Accuracy",
+                     trControl = ctrl)
+    
+    lrProb = predict(logiCSL, newdata=test, type="prob")
+    
+    lrPred = rep("NOT GALAXY", nrow(test))
+    lrPred[which(lrProb[,1] > threshold)] <- "GALAXY"
+    lrPred = factor(lrPred)
+    
+    CM = confusionMatrix(lrPred, test$Class)$table
+    
+    profit.i[i,j] <- sum(profit.unit*CM)/sum(CM) # profit per observation
+    
+  }
+}
+
+
+boxplot(profit.i, main = "Hyper-parameter selection",
+        ylab = "Profit",
+        xlab = "threshold value",names = seq(0.15,0.7,0.05),col="royalblue2")
+```
+
+The threshold that yields the highest profit corresponds to 0.4
+
+# 4. Final prediction
+
+We can now make the estimated optimal prediction, according to the cost sensitive learning carried out earlier.
+
+```{r, warning=FALSE, message=FALSE}
+data_test$Class = factor(ifelse(data_test$Class == 'GALAXY', 'GALAXY', "NOT GALAXY"))
+
+# final prediction
+logiFit <- train(Class ~ .,
+                method = "glmnet",
+                data = data_train,
+                preProcess = c("center", "scale"),
+                metric = "Accuracy",
+                trControl = ctrl)
+
+logiPred = predict(logiFit, data_test)
+
+lrProb = predict(logiFit, newdata=data_test, type="prob")
+
+threshold = 0.4
+
+lrPred = rep("NOT GALAXY", nrow(data_test))
+
+lrPred[which(lrProb[,1] > threshold)] = "GALAXY"
+lrPred = as.factor(lrPred)
+
+CM = confusionMatrix(lrPred, data_test$Class)$table
+
+confusionMatrix(lrPred, data_test$Class)
+
+print("Profit per observation:")
+sum(profit.unit*CM)/sum(CM) # profit per observation in %
+```
+
+# 5. Conclusions
+
+Several methods have been studied for the classification of astronomical objects, three of them were types of Bayes classifiers while the other one was multinomial logistic regression. Multinomial regression has been determined to be the most accurate one, achieving an accuracy of up to about 94%. Cost sensitive learning has been carried out on the multinomial logistic regression model through hyperparameter tuning, obtaining an optimal probabilistic threshold of 0.40. This has also allowed to minimize the most severe misclassification error and so maximized the hypothetical profit per observation from the Sloan Digital Sky Survey. However, further study of the predictors, especially in terms of their gaussianity and independence, should be carried out were this to be used in a real-life scenario, as these might have affected the different Bayes classifiers through deviation from their main hypothesis.
